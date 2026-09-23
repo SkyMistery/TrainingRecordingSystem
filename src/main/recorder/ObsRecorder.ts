@@ -1,4 +1,4 @@
-import OBSWebSocket, { EventSubscription } from 'obs-websocket-js'
+import { EventSubscription, OBSWebSocket } from 'obs-websocket-js'
 import type {
   AudioSourceConfig,
   AudioSourceKind,
