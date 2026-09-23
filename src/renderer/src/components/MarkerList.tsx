@@ -49,8 +49,9 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
             className="flex flex-col gap-2 rounded-md border border-border bg-background p-2 pr-3"
             style={{ borderLeft: `4px solid ${color}` }}
           >
-            <div className="flex items-center gap-4">
-              <div className="aspect-video w-36 shrink-0 overflow-hidden rounded-sm bg-fuselage-150 dark:bg-fuselage-800">
+            {/* Screenshot with the header and categories beside it; notes below, full width on phones. */}
+            <div className="flex items-start gap-3">
+              <div className="aspect-video w-24 shrink-0 sm:w-36 overflow-hidden rounded-sm bg-fuselage-150 dark:bg-fuselage-800">
                 {marker.screenshot && (
                   <img
                     src={mediaUrl(props.folderName, marker.screenshot)}
@@ -61,7 +62,7 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
                 )}
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-2">
-                <div className="flex items-center gap-2 text-sm">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                   {marker.kind === 'range' ? (
                     <MoveHorizontal className="size-4 text-muted-foreground" aria-label="Range" />
                   ) : (
@@ -80,6 +81,15 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
                       Dictating
                     </span>
                   )}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="-my-2 ml-auto"
+                    aria-label={`Delete marker ${marker.number}`}
+                    onClick={() => props.send('deleteMarker', props.folderName, marker.id)}
+                  >
+                    <Trash2 className="size-4" aria-hidden />
+                  </Button>
                 </div>
                 <div
                   className="flex flex-wrap gap-1.5"
@@ -96,7 +106,7 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
                         onClick={() =>
                           props.send('setMarkerCategory', props.folderName, marker.id, selected ? null : category.id)
                         }
-                        className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition-colors ${
+                        className={`flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs transition-colors ${
                           selected
                             ? 'border-transparent font-semibold'
                             : 'border-border text-muted-foreground hover:text-foreground'
@@ -114,17 +124,9 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
                   })}
                 </div>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={`Delete marker ${marker.number}`}
-                onClick={() => props.send('deleteMarker', props.folderName, marker.id)}
-              >
-                <Trash2 className="size-4" aria-hidden />
-              </Button>
             </div>
             {marker.notes.length > 0 && (
-              <div className="flex flex-col gap-1.5 pl-40">
+              <div className="flex flex-col gap-1.5 sm:pl-[9.75rem]">
                 {marker.notes.map((note) => (
                   <NoteItem
                     key={note.id}

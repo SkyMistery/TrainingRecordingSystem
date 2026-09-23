@@ -56,7 +56,7 @@ export function NoteItem({
         {playing ? <Pause className="size-4" aria-hidden /> : <Play className="size-4" aria-hidden />}
       </Button>
       <div className="flex min-w-0 flex-1 flex-col gap-1 pt-1.5">
-        <span className="font-mono text-xs text-muted-foreground">
+        <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
           {formatDuration(note.recordedAtMs)} · {Math.max(1, Math.round(note.durationMs / 1000))} s
         </span>
         {editing ? (
