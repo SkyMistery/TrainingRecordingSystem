@@ -85,28 +85,28 @@ async function stop(token: string): Promise<void> {
 
 /** Rendered in the hidden audio window: no UI, only microphone capture. */
 export function AudioView(): null {
-  useEffect(
-    () =>
-      window.api.onAudioCommand((command: AudioCommand) => {
-        const run = async (): Promise<void> => {
-          switch (command.type) {
-            case 'open':
-              return open(command.deviceId)
-            case 'start':
-              if (!capture) throw new Error('Microphone is not open')
-              return start()
-            case 'stop':
-              return stop(command.token)
-            case 'close':
-              return close()
-          }
+  useEffect(() => {
+    const unsubscribe = window.api.onAudioCommand((command: AudioCommand) => {
+      const run = async (): Promise<void> => {
+        switch (command.type) {
+          case 'open':
+            return open(command.deviceId)
+          case 'start':
+            if (!capture) throw new Error('Microphone is not open')
+            return start()
+          case 'stop':
+            return stop(command.token)
+          case 'close':
+            return close()
         }
-        run().catch((error: unknown) => {
-          void window.api.reportAudioError(error instanceof Error ? error.message : String(error))
-          if (command.type === 'stop') void window.api.sendNoteAudio(command.token, null)
-        })
-      }),
-    []
-  )
+      }
+      run().catch((error: unknown) => {
+        void window.api.reportAudioError(error instanceof Error ? error.message : String(error))
+        if (command.type === 'stop') void window.api.sendNoteAudio(command.token, null)
+      })
+    })
+    void window.api.reportAudioReady()
+    return unsubscribe
+  }, [])
   return null
 }

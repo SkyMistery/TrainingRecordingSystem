@@ -10,6 +10,7 @@ import type { AudioCommand, NoteAudio } from '../shared/types'
 export class AudioCapture {
   private window: BrowserWindow | null = null
   private ready: Promise<void> | null = null
+  private markReady: (() => void) | null = null
   private readonly pending = new Map<string, (audio: NoteAudio | null) => void>()
 
   constructor(private readonly onError: (message: string) => void) {
@@ -18,6 +19,7 @@ export class AudioCapture {
       this.pending.delete(token)
     })
     ipcMain.handle('audio:error', (_event, message: string) => this.onError(message))
+    ipcMain.handle('audio:ready', () => this.markReady?.())
   }
 
   private ensureWindow(): Promise<void> {
@@ -35,9 +37,16 @@ export class AudioCapture {
       this.window = null
       this.ready = null
     })
-    this.ready = process.env['ELECTRON_RENDERER_URL']
-      ? this.window.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#audio`)
-      : this.window.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'audio' })
+    // Ready once the page subscribed to commands, not merely loaded: a command
+    // sent in between would be lost.
+    this.ready = new Promise((resolve) => {
+      this.markReady = resolve
+    })
+    if (process.env['ELECTRON_RENDERER_URL']) {
+      void this.window.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#audio`)
+    } else {
+      void this.window.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'audio' })
+    }
     return this.ready
   }
 

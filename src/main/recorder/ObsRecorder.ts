@@ -301,7 +301,15 @@ export class ObsRecorder implements Recorder {
       throw new Error('OBS is recording or streaming right now. Stop it in OBS, then connect again.')
     }
     if (needsSwitch) {
-      this.workspace.set({ profile: profiles.currentProfileName, collection: collections.currentSceneCollectionName })
+      // After an interrupted restore one half may still be the app's own:
+      // keep what was remembered for that half instead.
+      const remembered = this.workspace.get()
+      const profile = profiles.currentProfileName !== PROFILE ? profiles.currentProfileName : remembered?.profile
+      const collection =
+        collections.currentSceneCollectionName !== COLLECTION
+          ? collections.currentSceneCollectionName
+          : remembered?.collection
+      if (profile && collection) this.workspace.set({ profile, collection })
     }
 
     if (profiles.currentProfileName !== PROFILE) {

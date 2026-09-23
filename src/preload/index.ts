@@ -83,6 +83,7 @@ const api = {
   onAudioCommand: (listener: (command: AudioCommand) => void) => subscribe('audio:command', listener),
   sendNoteAudio: (token: string, audio: NoteAudio | null) => invoke<void>('audio:note', token, audio),
   reportAudioError: (message: string) => invoke<void>('audio:error', message),
+  reportAudioReady: () => invoke<void>('audio:ready'),
 
   captureHotkey: () => invoke<Hotkey | null>('hotkeys:capture'),
   cancelHotkeyCapture: () => invoke<void>('hotkeys:cancelCapture')

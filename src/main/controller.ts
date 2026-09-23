@@ -41,6 +41,8 @@ interface Dictation {
   token: string
   markerId: string
   recordedAtMs: number
+  /** The marker was created for this note (and goes away if the note is empty). */
+  createdMarker: boolean
   /** OBS microphone sources muted for the dictation, unmuted afterwards. */
   mutedSourceIds: string[]
 }
@@ -474,7 +476,13 @@ export class Controller {
     if (!marker && latest && now - latest.pressedAtMs <= windowMs) marker = latest
 
     const token = randomUUID()
-    this.dictation = { token, markerId: marker?.id ?? '', recordedAtMs: now, mutedSourceIds: [] }
+    this.dictation = {
+      token,
+      markerId: marker?.id ?? '',
+      recordedAtMs: now,
+      createdMarker: !marker,
+      mutedSourceIds: []
+    }
     // Start capturing before anything slower (screenshot, OBS calls).
     await this.audio.start(token)
 
@@ -512,7 +520,11 @@ export class Controller {
     }, UNMUTE_DELAY_MS)
 
     const audio = await this.audio.stop(dictation.token)
-    if (!audio) return
+    if (!audio) {
+      // An accidental tap: don't leave behind a marker made only for this note.
+      if (dictation.createdMarker && this.active === active) await this.deleteMarker(dictation.markerId)
+      return
+    }
     const noteNumber = active.session.markers.reduce((sum, marker) => sum + marker.notes.length, 0) + 1
     const relative = `notes/n-${String(noteNumber).padStart(4, '0')}.wav`
     await mkdir(join(active.folder, 'notes'), { recursive: true })

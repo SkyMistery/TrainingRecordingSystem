@@ -13,7 +13,8 @@ const BODY_COLOR: Record<Theme, string> = { day: '#ffffff', night: '#12131b' }
 
 let mainWindow: BrowserWindow | null = null
 let controller: Controller | null = null
-let quitting = false
+/** Quitting waits for the recording to stop and OBS to get its profile back. */
+let quitState: 'running' | 'shuttingDown' | 'done' = 'running'
 
 function effectiveTheme(): Theme {
   return nativeTheme.shouldUseDarkColors ? 'night' : 'day'
@@ -43,10 +44,15 @@ function createMainWindow(): void {
 
   // Closing the window while recording goes through the quit confirmation.
   mainWindow.on('close', (event) => {
-    if (!quitting && controller?.isRecording()) {
+    if (quitState === 'running' && controller?.isRecording()) {
       event.preventDefault()
       app.quit()
     }
+  })
+  // The hidden microphone window would otherwise keep the app running.
+  mainWindow.on('closed', () => {
+    mainWindow = null
+    app.quit()
   })
 
   // Links open in the default browser, never inside the app.
@@ -98,8 +104,10 @@ app.on('window-all-closed', () => app.quit())
 
 // Stop the recording cleanly and give OBS back the trainer's own profile.
 app.on('before-quit', (event) => {
-  if (quitting) return
+  if (quitState === 'done') return
   event.preventDefault()
+  // Closing windows during shutdown asks to quit again: let the first request finish.
+  if (quitState === 'shuttingDown') return
   void (async () => {
     if (controller?.isRecording() && mainWindow && !mainWindow.isDestroyed()) {
       const { response } = await dialog.showMessageBox(mainWindow, {
@@ -112,8 +120,9 @@ app.on('before-quit', (event) => {
       })
       if (response !== 0) return
     }
-    quitting = true
+    quitState = 'shuttingDown'
     await controller?.shutdown().catch((error: unknown) => console.error('Shutdown failed', error))
+    quitState = 'done'
     app.quit()
   })()
 })
