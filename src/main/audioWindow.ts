@@ -13,12 +13,12 @@ export class AudioCapture {
   private markReady: (() => void) | null = null
   private readonly pending = new Map<string, (audio: NoteAudio | null) => void>()
 
-  constructor(private readonly onError: (message: string) => void) {
+  constructor(private readonly onStatus: (problem: string | null) => void) {
     ipcMain.handle('audio:note', (_event, token: string, audio: NoteAudio | null) => {
       this.pending.get(token)?.(audio)
       this.pending.delete(token)
     })
-    ipcMain.handle('audio:error', (_event, message: string) => this.onError(message))
+    ipcMain.handle('audio:status', (_event, problem: string | null) => this.onStatus(problem))
     ipcMain.handle('audio:ready', () => this.markReady?.())
   }
 
@@ -55,8 +55,8 @@ export class AudioCapture {
     this.window?.webContents.send('audio:command', command)
   }
 
-  open(deviceId: string): Promise<void> {
-    return this.send({ type: 'open', deviceId })
+  open(deviceId: string, label: string): Promise<void> {
+    return this.send({ type: 'open', deviceId, label })
   }
 
   start(token: string): Promise<void> {

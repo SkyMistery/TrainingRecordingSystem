@@ -17,6 +17,7 @@ import {
 import { CircleAlert, Download, X } from 'lucide-react'
 import { WHISPER_LANGUAGES, WHISPER_MODELS } from '@shared/whisper'
 import type { AppState, NoteSettings, WhisperModelId } from '@shared/types'
+import { openMicrophone } from '../microphone'
 
 interface Microphone {
   deviceId: string
@@ -38,16 +39,15 @@ async function listMicrophones(): Promise<Microphone[]> {
 }
 
 /** Live level of the chosen microphone, so the trainer can check it before a session. */
-function MicLevel({ deviceId }: { deviceId: string }): React.JSX.Element {
+function MicLevel({ deviceId, label }: { deviceId: string; label: string }): React.JSX.Element {
   const [level, setLevel] = useState(0)
   useEffect(() => {
     let frame = 0
     let stream: MediaStream | null = null
     let context: AudioContext | null = null
     let stopped = false
-    void navigator.mediaDevices
-      .getUserMedia({ audio: { deviceId: deviceId !== 'default' ? { exact: deviceId } : undefined } })
-      .then((media) => {
+    void openMicrophone(deviceId, label)
+      .then(({ stream: media }) => {
         if (stopped) return media.getTracks().forEach((track) => track.stop())
         stream = media
         context = new AudioContext()
@@ -71,7 +71,7 @@ function MicLevel({ deviceId }: { deviceId: string }): React.JSX.Element {
       stream?.getTracks().forEach((track) => track.stop())
       void context?.close()
     }
-  }, [deviceId])
+  }, [deviceId, label])
 
   return (
     <div className="h-2 w-full overflow-hidden rounded-sm bg-fuselage-150 dark:bg-fuselage-700" aria-hidden>
@@ -102,7 +102,14 @@ export function VoiceNotesCard({ state }: { state: AppState }): React.JSX.Elemen
 
   useEffect(() => {
     listMicrophones()
-      .then(setMicrophones)
+      .then((list) => {
+        setMicrophones(list)
+        // Device ids change between app versions and driver updates: follow the name.
+        if (!list.some((mic) => mic.deviceId === settings.micDeviceId)) {
+          const sameName = list.find((mic) => mic.label === settings.micLabel)
+          if (sameName) save({ micDeviceId: sameName.deviceId })
+        }
+      })
       .catch((error: unknown) => setMicError(error instanceof Error ? error.message : String(error)))
   }, [])
 
@@ -140,7 +147,7 @@ export function VoiceNotesCard({ state }: { state: AppState }): React.JSX.Elemen
             }}
             items={microphones.map((mic) => ({ value: mic.deviceId, label: mic.label }))}
           />
-          <MicLevel deviceId={settings.micDeviceId} />
+          <MicLevel deviceId={settings.micDeviceId} label={settings.micLabel} />
           <span className="text-xs text-muted-foreground">
             Speak: the bar should move. While you dictate, microphones marked “Mute in the recording while I dictate” in
             Audio are muted in OBS, so your notes don’t end up in the video.

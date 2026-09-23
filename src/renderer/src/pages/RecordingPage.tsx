@@ -70,6 +70,14 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
       </CardRoot>
 
       {error && <Alert variant="destructive" Icon={CircleAlert} title="Something went wrong" description={error} />}
+      {state.microphoneError && (
+        <Alert
+          variant="destructive"
+          Icon={CircleAlert}
+          title="Voice notes: microphone problem"
+          description={`${state.microphoneError} Check the microphone in Setup → Voice notes.`}
+        />
+      )}
 
       <CardRoot>
         <CardHeader className="flex-row flex-wrap items-start justify-between gap-4">

@@ -88,7 +88,8 @@ const api = {
   // Hidden microphone window.
   onAudioCommand: (listener: (command: AudioCommand) => void) => subscribe('audio:command', listener),
   sendNoteAudio: (token: string, audio: NoteAudio | null) => invoke<void>('audio:note', token, audio),
-  reportAudioError: (message: string) => invoke<void>('audio:error', message),
+  /** null: the microphone works; otherwise what is wrong. */
+  reportAudioStatus: (problem: string | null) => invoke<void>('audio:status', problem),
   reportAudioReady: () => invoke<void>('audio:ready'),
 
   captureHotkey: () => invoke<Hotkey | null>('hotkeys:capture'),

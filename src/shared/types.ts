@@ -206,6 +206,8 @@ export interface AppState {
   review: ReviewState | null
   companion: CompanionInfo
   companionSettings: CompanionSettings
+  /** Why voice notes can't be recorded right now (microphone problem), if anything. */
+  microphoneError: string | null
   busy: boolean
 }
 
@@ -217,7 +219,7 @@ export type AudioLevels = Record<string, number>
 
 /** Commands from the main process to the hidden microphone window. */
 export type AudioCommand =
-  | { type: 'open'; deviceId: string }
+  | { type: 'open'; deviceId: string; label: string }
   | { type: 'start'; token: string }
   | { type: 'stop'; token: string }
   | { type: 'close' }

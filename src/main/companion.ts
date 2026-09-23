@@ -224,6 +224,9 @@ export class CompanionServer {
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost')
+    const device = `${req.socket.remoteAddress} ${req.headers['user-agent'] ?? ''}`
+    if (url.pathname === '/' || url.pathname === '/pair')
+      console.info(`[companion] ${req.method} ${url.pathname} from ${device}`)
 
     if (url.pathname === '/pair') {
       if (!sameToken(url.searchParams.get('token') ?? undefined, this.token())) {
@@ -248,6 +251,18 @@ export class CompanionServer {
 
     if (!sameToken(cookieToken(req), this.token())) {
       res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' }).end(UNPAIRED_PAGE)
+      return
+    }
+
+    if (url.pathname === '/client-error' && req.method === 'POST') {
+      let body = ''
+      req.setEncoding('utf8')
+      for await (const chunk of req) {
+        body += chunk
+        if (body.length > 2000) break
+      }
+      console.warn(`[companion] page error on ${device}: ${body.slice(0, 2000)}`)
+      res.writeHead(204).end()
       return
     }
 

@@ -73,9 +73,12 @@ export class Controller {
     this.active?.folder === folder ? this.active.session : undefined
   )
   private readonly transcriber: Transcriber
-  private readonly audio = new AudioCapture((message) => {
-    console.error('Microphone error:', message)
-    this.feedback('error')
+  private readonly audio = new AudioCapture((problem) => {
+    if (problem) {
+      console.error('Microphone:', problem)
+      this.feedback('error')
+    }
+    if (problem !== this.state.microphoneError) this.patch({ microphoneError: problem })
   })
   private readonly companion = new CompanionServer(
     {
@@ -137,6 +140,7 @@ export class Controller {
       capture: settings.capture,
       markerSettings: settings.markers,
       companionSettings: settings.companion,
+      microphoneError: null,
       noteSettings: settings.notes,
       transcription: this.transcriptionState(),
       review: null,
@@ -337,7 +341,8 @@ export class Controller {
       await updateSettings({ trainerVid: metadata.trainerVid })
     })
     // Kept open for the whole session so push-to-talk starts instantly.
-    this.audio.open(getSettings().notes.micDeviceId).catch((error: unknown) => {
+    const { micDeviceId, micLabel } = getSettings().notes
+    this.audio.open(micDeviceId, micLabel).catch((error: unknown) => {
       console.error('Could not open the microphone', error)
     })
     this.publishRecording()

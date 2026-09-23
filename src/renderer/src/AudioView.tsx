@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import type { AudioCommand } from '@shared/types'
+import { describeMediaError, openMicrophone } from './microphone'
 import { encodeWav } from './wav'
 
 const SAMPLE_RATE = 16_000
@@ -25,17 +26,17 @@ function ringSamples(): number {
   return ring.reduce((sum, chunk) => sum + chunk.length, 0)
 }
 
-async function open(deviceId: string): Promise<void> {
+async function open(deviceId: string, label: string): Promise<void> {
   close()
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      deviceId: deviceId && deviceId !== 'default' ? { exact: deviceId } : undefined,
-      channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true
-    }
+  const { stream, fallback } = await openMicrophone(deviceId, label, {
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
   })
+  void window.api.reportAudioStatus(
+    fallback ? `“${label}” was not found: voice notes use the Windows default microphone.` : null
+  )
   // The context resamples the microphone to 16 kHz for us.
   const context = new AudioContext({ sampleRate: SAMPLE_RATE })
   const source = context.createMediaStreamSource(stream)
@@ -90,9 +91,9 @@ export function AudioView(): null {
       const run = async (): Promise<void> => {
         switch (command.type) {
           case 'open':
-            return open(command.deviceId)
+            return open(command.deviceId, command.label)
           case 'start':
-            if (!capture) throw new Error('Microphone is not open')
+            if (!capture) throw new Error('The microphone could not be opened, so this note was not recorded.')
             return start()
           case 'stop':
             return stop(command.token)
@@ -101,7 +102,7 @@ export function AudioView(): null {
         }
       }
       run().catch((error: unknown) => {
-        void window.api.reportAudioError(error instanceof Error ? error.message : String(error))
+        void window.api.reportAudioStatus(describeMediaError(error))
         if (command.type === 'stop') void window.api.sendNoteAudio(command.token, null)
       })
     })
