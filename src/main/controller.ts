@@ -140,7 +140,7 @@ export class Controller {
       noteSettings: settings.notes,
       transcription: this.transcriptionState(),
       review: null,
-      companion: { running: false, error: null, urls: [], qr: null, clients: 0 },
+      companion: { running: false, error: null, urls: [], qr: null, clients: 0, publicNetwork: false },
       busy: false
     }
     this.recorder = new ObsRecorder(

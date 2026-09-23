@@ -267,9 +267,11 @@ export interface CompanionInfo {
   error: string | null
   /** Pairing links: this PC first, then local network addresses when enabled. */
   urls: string[]
-  /** QR code (data URL) for the first network link, or this PC's. */
+  /** QR code (data URL) for the best network link, or this PC's. */
   qr: string | null
   clients: number
+  /** Windows network profile is Public: its firewall blocks tablets. */
+  publicNetwork: boolean
 }
 
 /** What the Companion page receives: everything it shows, nothing else. */

@@ -28,7 +28,7 @@ export function CompanionCard({
 
   const save = (patch: Partial<CompanionSettings>): void =>
     void window.api.saveCompanionSettings({ ...settings, ...patch })
-  const networkUrl = info.urls.length > 1 ? info.urls[info.urls.length - 1] : null
+  const networkUrl = info.urls[1] ?? null
 
   return (
     <CardRoot>
@@ -133,6 +133,14 @@ export function CompanionCard({
               )}
             </div>
 
+            {settings.lan && info.publicNetwork && (
+              <Alert
+                variant="destructive"
+                Icon={ShieldAlert}
+                title="Your network is set to Public"
+                description="Windows blocks tablets from connecting on Public networks. In Windows Settings → Network & internet → Wi-Fi (or Ethernet) → your network, set “Network profile type” to Private, then reopen this page."
+              />
+            )}
             {info.error && (
               <Alert variant="destructive" Icon={CircleAlert} title="Companion not running" description={info.error} />
             )}

@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
@@ -48,11 +49,30 @@ interface CompanionHooks {
   changed: () => void
 }
 
+/** Virtual adapters (WSL, Hyper-V, VPNs, VMs) a tablet can't reach. */
+const VIRTUAL_ADAPTER = /vEthernet|WSL|Hyper-V|VirtualBox|VMware|Loopback|Bluetooth|TAP|Tailscale|ZeroTier/i
+
+/** Addresses of real network adapters, home-network ranges (192.168.x, 10.x) first. */
 function lanAddresses(): string[] {
-  return Object.values(networkInterfaces())
-    .flat()
-    .filter((net) => net && net.family === 'IPv4' && !net.internal)
-    .map((net) => net!.address)
+  const addresses = Object.entries(networkInterfaces())
+    .filter(([name]) => !VIRTUAL_ADAPTER.test(name))
+    .flatMap(([, nets]) => nets ?? [])
+    .filter((net) => net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254.'))
+    .map((net) => net.address)
+  const rank = (ip: string): number => (ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : 2)
+  return addresses.sort((x, y) => rank(x) - rank(y))
+}
+
+/** Whether a connected Windows network uses the Public profile (inbound connections blocked). */
+function isPublicNetwork(): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(
+      'powershell',
+      ['-NoProfile', '-Command', '@(Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq "Public" }).Count'],
+      { windowsHide: true, timeout: 10_000 },
+      (error, stdout) => resolve(!error && Number(stdout.trim()) > 0)
+    )
+  })
 }
 
 function sameToken(a: string | undefined, b: string): boolean {
@@ -82,6 +102,7 @@ export class CompanionServer {
   private error: string | null = null
   private qr: string | null = null
   private urls: string[] = []
+  private publicNetwork = false
 
   constructor(
     private readonly hooks: CompanionHooks,
@@ -95,7 +116,8 @@ export class CompanionServer {
       error: this.error,
       urls: this.urls,
       qr: this.qr,
-      clients: this.sockets?.clients.size ?? 0
+      clients: this.sockets?.clients.size ?? 0,
+      publicNetwork: this.publicNetwork
     }
   }
 
@@ -134,7 +156,9 @@ export class CompanionServer {
       this.error = null
       const hosts = ['127.0.0.1', ...(settings.lan ? lanAddresses() : [])]
       this.urls = hosts.map((host) => this.pairUrl(host))
-      this.qr = await QRCode.toDataURL(this.urls[this.urls.length - 1], { margin: 1, width: 240 })
+      this.publicNetwork = settings.lan ? await isPublicNetwork() : false
+      // The QR code is for the tablet: the best network address, or this PC.
+      this.qr = await QRCode.toDataURL(this.urls[1] ?? this.urls[0], { margin: 1, width: 240 })
     } catch (error) {
       this.error =
         (error as NodeJS.ErrnoException).code === 'EADDRINUSE'
