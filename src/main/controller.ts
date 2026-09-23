@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto'
+import { mkdir, unlink } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import type {
   AppState,
@@ -5,18 +8,26 @@ import type {
   AudioSourceKind,
   CaptureConfig,
   EncoderId,
+  Hotkey,
+  Marker,
+  MarkerFeedback,
+  MarkerSettings,
   ObsConnectionConfig,
   SessionFile,
   SessionMetadata
 } from '../shared/types'
+import { sameHotkey } from '../shared/hotkey'
+import { GlobalHotkeys } from './hotkeys'
 import { ObsRecorder } from './recorder/ObsRecorder'
 import type { Recorder } from './recorder/Recorder'
 import { adoptRecording, createSession, listSessions, saveSession } from './sessions'
 import { decryptSecret, encryptSecret, getSettings, updateSettings } from './settings'
+import { hideStatusWindow, showStatusWindow } from './statusWindow'
 
 interface ActiveSession {
   folder: string
   session: SessionFile
+  openRangeId: string | null
 }
 
 /**
@@ -25,14 +36,19 @@ interface ActiveSession {
  */
 export class Controller {
   private readonly recorder: Recorder
+  private readonly hotkeys = new GlobalHotkeys()
   private active: ActiveSession | null = null
   private state: AppState
+  /** session.json writes are chained so concurrent changes never interleave. */
+  private saving: Promise<void> = Promise.resolve()
 
   constructor() {
+    const settings = getSettings()
     this.state = {
       obs: { status: 'disconnected', error: null, version: null },
       recording: null,
-      capture: getSettings().capture,
+      capture: settings.capture,
+      markerSettings: settings.markers,
       busy: false
     }
     this.recorder = new ObsRecorder(
@@ -54,6 +70,12 @@ export class Controller {
   async init(): Promise<void> {
     await this.detectDefaultEncoder()
     this.registerIpc()
+    this.hotkeys.on('down', (hotkey) => this.onHotkey(hotkey))
+    try {
+      this.hotkeys.start()
+    } catch (error) {
+      console.error('Global hotkeys unavailable', error)
+    }
     // Connect silently at startup; the Setup page shows the outcome.
     void this.connectObs().catch(() => undefined)
   }
@@ -63,6 +85,7 @@ export class Controller {
   }
 
   async shutdown(): Promise<void> {
+    this.hotkeys.stop()
     if (this.active) await this.stopSession()
     await this.recorder.disconnect().catch(() => undefined)
   }
@@ -115,12 +138,25 @@ export class Controller {
     handle('sessions:list', () => listSessions(getSettings().sessionsDir))
     handle('sessions:openFolder', async (folder?: string) => {
       const target = folder ?? getSettings().sessionsDir
-      await import('node:fs/promises').then((fs) => fs.mkdir(target, { recursive: true }))
+      await mkdir(target, { recursive: true })
       await shell.openPath(target)
     })
     handle('sessions:defaults', () => ({ trainerVid: getSettings().trainerVid }))
     handle('session:start', (metadata: SessionMetadata) => this.startSession(metadata))
     handle('session:stop', () => this.stopSession())
+
+    handle('markers:add', () => this.addPointMarker())
+    handle('markers:toggleRange', () => this.toggleRange())
+    handle('markers:setCategory', (markerId: string | null, categoryId: string | null) =>
+      this.setCategory(markerId, categoryId)
+    )
+    handle('markers:delete', (markerId: string) => this.deleteMarker(markerId))
+    handle('markers:saveSettings', async (markers: MarkerSettings) => {
+      await updateSettings({ markers })
+      this.patch({ markerSettings: markers })
+    })
+    handle('hotkeys:capture', () => this.hotkeys.captureNext())
+    handle('hotkeys:cancelCapture', () => this.hotkeys.cancelCapture())
   }
 
   private requireObs(): Recorder {
@@ -134,12 +170,19 @@ export class Controller {
     try {
       const { version } = await this.recorder.connect()
       this.patch({ obs: { status: 'connected', error: null, version } })
-      if (this.state.capture.display) await this.withBusy(() => this.recorder.configure(this.state.capture))
     } catch (error) {
       this.patch({ obs: { status: 'error', error: describeObsError(error), version: null } })
       throw new Error(describeObsError(error))
     }
+    // Applied again before every recording, so a failure here isn't fatal.
+    if (this.state.capture.display) {
+      await this.withBusy(() => this.recorder.configure(this.state.capture)).catch((error: unknown) =>
+        console.warn('Capture settings not applied yet:', error instanceof Error ? error.message : error)
+      )
+    }
   }
+
+  // --- Sessions ------------------------------------------------------------------
 
   private async startSession(metadata: SessionMetadata): Promise<void> {
     if (this.active) throw new Error('A session is already being recorded')
@@ -157,11 +200,12 @@ export class Controller {
         durationMs: 0,
         display: { name: capture.display!.name, width: capture.display!.width, height: capture.display!.height }
       }
-      await saveSession(folder, session)
-      this.active = { folder, session }
+      this.active = { folder, session, openRangeId: null }
+      await this.persist()
       await updateSettings({ trainerVid: metadata.trainerVid })
     })
     this.publishRecording()
+    if (getSettings().markers.statusWindow) showStatusWindow(capture.display.name)
   }
 
   private async stopSession(): Promise<void> {
@@ -175,7 +219,7 @@ export class Controller {
   private async finaliseSession(outputPath: string | null, durationMs?: number): Promise<void> {
     const active = this.active
     if (!active) return
-    this.active = null
+    hideStatusWindow()
     const recording = active.session.recording
     if (recording) {
       recording.durationMs = Math.round(durationMs ?? Date.now() - Date.parse(recording.startedAt))
@@ -187,23 +231,159 @@ export class Controller {
           recording.file = outputPath
         }
       }
+      // A range still open when recording stops ends with the recording.
+      const open = active.session.markers.find((marker) => marker.id === active.openRangeId)
+      if (open) open.endMs = Math.max(open.timeMs, recording.durationMs)
     }
-    await saveSession(active.folder, active.session)
+    await this.persist()
+    this.active = null
     this.patch({ recording: null })
     this.broadcast('sessions:changed', null)
   }
 
   private publishRecording(): void {
-    if (!this.active) return
+    const active = this.active
+    if (!active) return
     this.patch({
       recording: {
-        sessionId: this.active.session.id,
-        metadata: this.active.session.metadata,
+        sessionId: active.session.id,
+        metadata: active.session.metadata,
         elapsedMs: this.recorder.currentTimeMs(),
-        sampledAt: Date.now()
+        sampledAt: Date.now(),
+        folderName: basename(active.folder),
+        markers: active.session.markers.map((marker) => ({ ...marker })),
+        openRangeId: active.openRangeId
       }
     })
   }
+
+  private persist(): Promise<void> {
+    const active = this.active
+    if (!active) return this.saving
+    const snapshot = structuredClone(active.session)
+    this.saving = this.saving
+      .then(() => saveSession(active.folder, snapshot))
+      .catch((error: unknown) => console.error('Could not save the session', error))
+    return this.saving
+  }
+
+  // --- Markers -------------------------------------------------------------------
+
+  private onHotkey(hotkey: Hotkey): void {
+    if (!this.active) return
+    const run = (action: () => Promise<void>): void => {
+      action().catch((error: unknown) => {
+        console.error('Hotkey action failed', error)
+        this.feedback('error')
+      })
+    }
+    const { hotkeys, categories } = getSettings().markers
+    if (sameHotkey(hotkey, hotkeys.marker)) {
+      run(() => this.addPointMarker())
+    } else if (sameHotkey(hotkey, hotkeys.range)) {
+      run(() => this.toggleRange())
+    } else {
+      const category = categories.find((item) => sameHotkey(hotkey, item.hotkey))
+      if (category) run(() => this.setCategory(null, category.id))
+    }
+  }
+
+  private newMarker(active: ActiveSession, kind: Marker['kind']): Marker {
+    const pressedAtMs = Math.round(this.recorder.currentTimeMs())
+    const preRollMs = getSettings().markers.preRollSeconds * 1000
+    return {
+      id: randomUUID().slice(0, 8),
+      number: (active.session.markers.at(-1)?.number ?? 0) + 1,
+      kind,
+      timeMs: Math.max(0, pressedAtMs - preRollMs),
+      pressedAtMs,
+      endMs: null,
+      categoryId: null,
+      screenshot: null,
+      createdAt: new Date().toISOString()
+    }
+  }
+
+  /** Saves the marker right away, then attaches the screenshot when OBS has written it. */
+  private async commitMarker(active: ActiveSession, marker: Marker, feedback: MarkerFeedback): Promise<void> {
+    active.session.markers.push(marker)
+    await this.persist()
+    this.publishRecording()
+    this.feedback(feedback)
+
+    const relative = `screenshots/m-${String(marker.number).padStart(4, '0')}.png`
+    try {
+      await mkdir(join(active.folder, 'screenshots'), { recursive: true })
+      await this.recorder.screenshot(join(active.folder, relative))
+      marker.screenshot = relative
+      if (this.active === active) {
+        await this.persist()
+        this.publishRecording()
+      }
+    } catch (error) {
+      console.error('Screenshot failed', error)
+    }
+  }
+
+  private async addPointMarker(): Promise<void> {
+    const active = this.requireActive()
+    await this.commitMarker(active, this.newMarker(active, 'point'), 'marker')
+  }
+
+  /** First press opens a range, the second closes it. */
+  private async toggleRange(): Promise<void> {
+    const active = this.requireActive()
+    const open = active.session.markers.find((marker) => marker.id === active.openRangeId)
+    if (open) {
+      open.endMs = Math.max(open.timeMs, Math.round(this.recorder.currentTimeMs()))
+      active.openRangeId = null
+      await this.persist()
+      this.publishRecording()
+      this.feedback('rangeEnd')
+      return
+    }
+    const marker = this.newMarker(active, 'range')
+    active.openRangeId = marker.id
+    await this.commitMarker(active, marker, 'rangeStart')
+  }
+
+  /** `markerId` null means the most recent marker (used by category hotkeys). */
+  private async setCategory(markerId: string | null, categoryId: string | null): Promise<void> {
+    const active = this.requireActive()
+    const marker = markerId
+      ? active.session.markers.find((item) => item.id === markerId)
+      : active.session.markers.at(-1)
+    if (!marker) {
+      this.feedback('error')
+      return
+    }
+    marker.categoryId = categoryId
+    await this.persist()
+    this.publishRecording()
+    this.feedback('category')
+  }
+
+  private async deleteMarker(markerId: string): Promise<void> {
+    const active = this.requireActive()
+    const marker = active.session.markers.find((item) => item.id === markerId)
+    if (!marker) return
+    active.session.markers = active.session.markers.filter((item) => item.id !== markerId)
+    if (active.openRangeId === markerId) active.openRangeId = null
+    await this.persist()
+    this.publishRecording()
+    if (marker.screenshot) await unlink(join(active.folder, marker.screenshot)).catch(() => undefined)
+  }
+
+  private requireActive(): ActiveSession {
+    if (!this.active) throw new Error('No session is being recorded')
+    return this.active
+  }
+
+  private feedback(kind: MarkerFeedback): void {
+    this.broadcast('marker:feedback', kind)
+  }
+
+  // --- Settings ------------------------------------------------------------------
 
   private async updateSource(sourceId: string, patch: { muted?: boolean; volumeDb?: number }): Promise<void> {
     const capture: CaptureConfig = {
@@ -249,7 +429,7 @@ export class Controller {
     this.broadcast('state:changed', this.state)
   }
 
-  private broadcast(channel: string, payload: AppState | AudioLevels | null): void {
+  private broadcast(channel: string, payload: AppState | AudioLevels | MarkerFeedback | null): void {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send(channel, payload)
     }

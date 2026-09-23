@@ -198,6 +198,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
                   <TableHead>Position</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Duration</TableHead>
+                  <TableHead>Markers</TableHead>
                   <TableHead className="text-right">Files</TableHead>
                 </TableRow>
               </TableHeader>
@@ -214,6 +215,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
                     <TableCell className="font-mono">{session.metadata.position}</TableCell>
                     <TableCell>{session.metadata.trainingType}</TableCell>
                     <TableCell>{session.durationMs !== null ? formatDuration(session.durationMs) : '—'}</TableCell>
+                    <TableCell>{session.markerCount}</TableCell>
                     <TableCell className="text-right">
                       <Button
                         variant="ghost"

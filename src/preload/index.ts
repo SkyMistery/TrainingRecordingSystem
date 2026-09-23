@@ -7,6 +7,9 @@ import type {
   AudioTargetOption,
   CaptureConfig,
   DisplayOption,
+  Hotkey,
+  MarkerFeedback,
+  MarkerSettings,
   ObsConnectionConfig,
   SessionMetadata,
   SessionSummary
@@ -53,7 +56,17 @@ const api = {
   getSessionDefaults: () => invoke<{ trainerVid: string }>('sessions:defaults'),
   onSessionsChanged: (listener: () => void) => subscribe('sessions:changed', listener),
   startSession: (metadata: SessionMetadata) => invoke<void>('session:start', metadata),
-  stopSession: () => invoke<void>('session:stop')
+  stopSession: () => invoke<void>('session:stop'),
+
+  addMarker: () => invoke<void>('markers:add'),
+  toggleRange: () => invoke<void>('markers:toggleRange'),
+  setMarkerCategory: (markerId: string | null, categoryId: string | null) =>
+    invoke<void>('markers:setCategory', markerId, categoryId),
+  deleteMarker: (markerId: string) => invoke<void>('markers:delete', markerId),
+  saveMarkerSettings: (settings: MarkerSettings) => invoke<void>('markers:saveSettings', settings),
+  onMarkerFeedback: (listener: (kind: MarkerFeedback) => void) => subscribe('marker:feedback', listener),
+  captureHotkey: () => invoke<Hotkey | null>('hotkeys:capture'),
+  cancelHotkeyCapture: () => invoke<void>('hotkeys:cancelCapture')
 }
 
 export type Api = typeof api

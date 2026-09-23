@@ -30,7 +30,8 @@ export async function createSession(root: string, metadata: SessionMetadata): Pr
     id: randomUUID(),
     createdAt: now.toISOString(),
     metadata,
-    recording: null
+    recording: null,
+    markers: []
   }
   await writeJsonAtomic(join(folder, SESSION_FILE), session)
   return { folder, session }
@@ -57,7 +58,8 @@ export async function listSessions(root: string): Promise<SessionSummary[]> {
         folder,
         metadata: session.metadata,
         durationMs: session.recording?.durationMs ?? null,
-        hasRecording: Boolean(session.recording?.file)
+        hasRecording: Boolean(session.recording?.file),
+        markerCount: session.markers?.length ?? 0
       })
     } catch {
       // Not a session folder.

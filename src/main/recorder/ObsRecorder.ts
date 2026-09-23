@@ -169,6 +169,9 @@ export class ObsRecorder implements Recorder {
 
   async configure(config: CaptureConfig): Promise<void> {
     if (this.recording) throw new Error('Capture settings cannot be changed while recording')
+    if (await this.obsOutputActive()) {
+      throw new Error('OBS is recording or streaming right now: settings will be applied once it stops.')
+    }
     await this.applyOutputSettings(config)
     if (config.display) await this.applyDisplay(config)
     await this.applyAudioSources(config.audioSources)
@@ -269,14 +272,24 @@ export class ObsRecorder implements Recorder {
     }
   }
 
+  /** True while OBS records or streams anything, including outside this app. */
+  private async obsOutputActive(): Promise<boolean> {
+    const [record, stream] = await Promise.all([this.obs.call('GetRecordStatus'), this.obs.call('GetStreamStatus')])
+    return record.outputActive || stream.outputActive
+  }
+
   /** Switches OBS to the app's own profile, scene collection and scene. */
   private async enterWorkspace(): Promise<void> {
     const collections = await this.obs.call('GetSceneCollectionList')
     const profiles = await this.obs.call('GetProfileList')
-    this.previous =
-      collections.currentSceneCollectionName !== COLLECTION || profiles.currentProfileName !== PROFILE
-        ? { profile: profiles.currentProfileName, collection: collections.currentSceneCollectionName }
-        : null
+    const needsSwitch = collections.currentSceneCollectionName !== COLLECTION || profiles.currentProfileName !== PROFILE
+    // Switching scenes would change what an ongoing recording or stream captures.
+    if (needsSwitch && (await this.obsOutputActive())) {
+      throw new Error('OBS is recording or streaming right now. Stop it in OBS, then connect again.')
+    }
+    this.previous = needsSwitch
+      ? { profile: profiles.currentProfileName, collection: collections.currentSceneCollectionName }
+      : null
 
     if (profiles.currentProfileName !== PROFILE) {
       if (profiles.profiles.includes(PROFILE)) {
@@ -322,6 +335,7 @@ export class ObsRecorder implements Recorder {
 
   private async restoreWorkspace(): Promise<void> {
     if (!this.previous || this.recording) return
+    if (await this.obsOutputActive()) return
     const { profile, collection } = this.previous
     await this.obs.call('SetCurrentSceneCollection', { sceneCollectionName: collection })
     await this.obs.call('SetCurrentProfile', { profileName: profile })

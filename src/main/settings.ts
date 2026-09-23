@@ -3,7 +3,7 @@ import { rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import type { ThemePreference } from '../shared/theme'
-import type { CaptureConfig } from '../shared/types'
+import type { CaptureConfig, Hotkey, MarkerSettings } from '../shared/types'
 
 export interface Settings {
   theme: ThemePreference
@@ -16,7 +16,35 @@ export interface Settings {
   capture: CaptureConfig
   sessionsDir: string
   trainerVid: string
+  markers: MarkerSettings
+  /** Last position of the status window, in screen coordinates. */
+  statusWindowPosition: { x: number; y: number } | null
 }
+
+const key = (code: number, label: string): Hotkey => ({
+  device: 'keyboard',
+  code,
+  ctrl: false,
+  alt: false,
+  shift: false,
+  label
+})
+
+/** Category colours come from the IVAO brand palette (atmos, semantic, product). */
+export const defaultMarkerSettings = (): MarkerSettings => ({
+  preRollSeconds: 10,
+  // 67 and 68 are the uiohook keycodes of F9 and F10.
+  hotkeys: { marker: key(67, 'F9'), range: key(68, 'F10'), voiceNote: null },
+  categories: [
+    { id: 'phraseology', name: 'Phraseology', color: '#1342e4', hotkey: null },
+    { id: 'separation', name: 'Separation', color: '#e93434', hotkey: null },
+    { id: 'coordination', name: 'Coordination', color: '#f9cc2c', hotkey: null },
+    { id: 'traffic', name: 'Traffic management', color: '#8b5cf6', hotkey: null },
+    { id: 'positive', name: 'Positive', color: '#2ec662', hotkey: null }
+  ],
+  sound: true,
+  statusWindow: true
+})
 
 const defaults = (): Settings => ({
   theme: 'system',
@@ -29,7 +57,9 @@ const defaults = (): Settings => ({
     audioSources: []
   },
   sessionsDir: join(app.getPath('documents'), 'IVAO TRS', 'Sessions'),
-  trainerVid: ''
+  trainerVid: '',
+  markers: defaultMarkerSettings(),
+  statusWindowPosition: null
 })
 
 const filePath = (): string => join(app.getPath('userData'), 'settings.json')
@@ -45,7 +75,12 @@ export function getSettings(): Settings {
         ...base,
         ...stored,
         obs: { ...base.obs, ...stored.obs },
-        capture: { ...base.capture, ...stored.capture }
+        capture: { ...base.capture, ...stored.capture },
+        markers: {
+          ...base.markers,
+          ...stored.markers,
+          hotkeys: { ...base.markers.hotkeys, ...stored.markers?.hotkeys }
+        }
       }
     } catch {
       current = base

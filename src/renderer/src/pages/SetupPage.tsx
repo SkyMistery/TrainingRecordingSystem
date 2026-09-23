@@ -23,6 +23,7 @@ import type {
   OutputScale
 } from '@shared/types'
 import { AudioMixer } from '../components/AudioMixer'
+import { MarkersCard } from '../components/MarkersCard'
 import { useAudioLevels } from '../hooks'
 
 function useAction(): [string | null, <T>(fn: () => Promise<T>) => Promise<T | undefined>] {
@@ -400,6 +401,7 @@ export function SetupPage({ state }: { state: AppState }): React.JSX.Element {
       <ObsConnectionCard state={state} />
       <DisplayCard state={state} save={save} />
       <AudioCard state={state} save={save} />
+      <MarkersCard settings={state.markerSettings} />
       <ErrorAlert message={error} />
     </div>
   )

@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Alert, Button, CardContent, CardHeader, CardRoot, CardTitle } from '@ivao/atmosphere-react'
-import { CircleAlert, Square } from 'lucide-react'
+import { Alert, Button, CardContent, CardDescription, CardHeader, CardRoot, CardTitle } from '@ivao/atmosphere-react'
+import { CircleAlert, Flag, MoveHorizontal, Square } from 'lucide-react'
 import type { AppState, RecordingState } from '@shared/types'
 import { AudioMixer } from '../components/AudioMixer'
+import { MarkerList } from '../components/MarkerList'
 import { formatDuration } from '../format'
 import { useAudioLevels, useNow } from '../hooks'
 
@@ -13,14 +14,11 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
   const [error, setError] = useState<string | null>(null)
   const elapsed = recording.elapsedMs + (now - recording.sampledAt)
   const { metadata } = recording
+  const { hotkeys } = state.markerSettings
 
-  const stop = async (): Promise<void> => {
+  const run = (action: () => Promise<void>): void => {
     setError(null)
-    try {
-      await window.api.stopSession()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+    action().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }
 
   return (
@@ -50,7 +48,7 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
                 <Button variant="outline" onClick={() => setConfirming(false)}>
                   Keep recording
                 </Button>
-                <Button variant="destructive" isLoading={state.busy} onClick={() => void stop()}>
+                <Button variant="destructive" isLoading={state.busy} onClick={() => run(() => window.api.stopSession())}>
                   <Square className="size-4 fill-current" aria-hidden />
                   Stop
                 </Button>
@@ -65,7 +63,39 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
         </CardContent>
       </CardRoot>
 
-      {error && <Alert variant="destructive" Icon={CircleAlert} title="Could not stop the recording" description={error} />}
+      {error && <Alert variant="destructive" Icon={CircleAlert} title="Something went wrong" description={error} />}
+
+      <CardRoot>
+        <CardHeader className="flex-row flex-wrap items-start justify-between gap-4">
+          <div className="flex flex-col gap-1.5">
+            <CardTitle>Markers</CardTitle>
+            <CardDescription>
+              Hotkeys: marker {hotkeys.marker?.label ?? '(not set)'} · range {hotkeys.range?.label ?? '(not set)'}.
+              Markers are placed {state.markerSettings.preRollSeconds} s before the key press.
+            </CardDescription>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => run(() => window.api.addMarker())}>
+              <Flag className="size-4" aria-hidden />
+              Add marker
+            </Button>
+            <Button variant="outline" onClick={() => run(() => window.api.toggleRange())}>
+              <MoveHorizontal className="size-4" aria-hidden />
+              {recording.openRangeId ? 'End range' : 'Start range'}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <MarkerList
+            markers={recording.markers}
+            categories={state.markerSettings.categories}
+            folderName={recording.folderName}
+            openRangeId={recording.openRangeId}
+            onCategoryChange={(markerId, categoryId) => run(() => window.api.setMarkerCategory(markerId, categoryId))}
+            onDelete={(markerId) => run(() => window.api.deleteMarker(markerId))}
+          />
+        </CardContent>
+      </CardRoot>
 
       <CardRoot>
         <CardHeader>
@@ -75,7 +105,7 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
           <AudioMixer
             sources={state.capture.audioSources}
             levels={levels}
-            onMutedChange={(id, muted) => void window.api.setSourceMuted(id, muted)}
+            onMutedChange={(id, muted) => run(() => window.api.setSourceMuted(id, muted))}
           />
         </CardContent>
       </CardRoot>

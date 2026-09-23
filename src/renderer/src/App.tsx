@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Header, type Page } from './components/Header'
+import { useMarkerFeedbackSound } from './feedback'
 import { useAppState } from './hooks'
 import { RecordingPage } from './pages/RecordingPage'
 import { SessionsPage } from './pages/SessionsPage'
@@ -11,6 +12,7 @@ export function App(): React.JSX.Element {
   const [page, setPage] = useState<Page>('sessions')
   const { preference, setPreference } = useTheme()
   const state = useAppState()
+  useMarkerFeedbackSound(state?.markerSettings.sound ?? false)
 
   useEffect(() => {
     void window.api.getVersion().then(setVersion)

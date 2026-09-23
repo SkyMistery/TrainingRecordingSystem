@@ -3,7 +3,10 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electro
 import { autoUpdater } from 'electron-updater'
 import type { Theme, ThemePreference, ThemeState } from '../shared/theme'
 import { Controller } from './controller'
+import { handleMediaScheme, registerMediaScheme } from './media'
 import { getSettings, updateSettings } from './settings'
+
+registerMediaScheme()
 
 // Atmosphere page background (--body) for each theme, used before the UI paints.
 const BODY_COLOR: Record<Theme, string> = { day: '#ffffff', night: '#12131b' }
@@ -78,6 +81,7 @@ function registerIpc(): void {
 
 app.whenReady().then(async () => {
   applyThemePreference(getSettings().theme)
+  handleMediaScheme()
   registerIpc()
   controller = new Controller()
   await controller.init()
