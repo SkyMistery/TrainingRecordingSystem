@@ -27,11 +27,12 @@ function clamp(zoom: Zoom, width: number, height: number): Zoom {
  */
 export function useZoom(onClick: () => void): {
   zoom: Zoom
-  frameProps: React.HTMLAttributes<HTMLDivElement> & { ref: React.RefObject<HTMLDivElement | null> }
+  frameProps: React.HTMLAttributes<HTMLDivElement> & { ref: (node: HTMLDivElement | null) => void }
   zoomBy: (factor: number) => void
   reset: () => void
 } {
-  const frame = useRef<HTMLDivElement>(null)
+  const frame = useRef<HTMLDivElement | null>(null)
+  const [element, setElement] = useState<HTMLDivElement | null>(null)
   const [zoom, setZoom] = useState<Zoom>(IDENTITY)
   const drag = useRef<{ startX: number; startY: number; from: Zoom; moved: boolean } | null>(null)
 
@@ -57,7 +58,6 @@ export function useZoom(onClick: () => void): {
 
   // Native listener: React's wheel handlers are passive, so they can't stop the page from scrolling too.
   useEffect(() => {
-    const element = frame.current
     if (!element) return
     const onWheel = (event: WheelEvent): void => {
       event.preventDefault()
@@ -65,10 +65,14 @@ export function useZoom(onClick: () => void): {
     }
     element.addEventListener('wheel', onWheel, { passive: false })
     return () => element.removeEventListener('wheel', onWheel)
-  }, [zoomAt])
+  }, [element, zoomAt])
 
   const frameProps = {
-    ref: frame,
+    // Callback ref: re-attaches the wheel listener if the element is ever replaced.
+    ref: (node: HTMLDivElement | null) => {
+      frame.current = node
+      setElement(node)
+    },
     onDoubleClick: reset,
     onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
       event.currentTarget.setPointerCapture(event.pointerId)

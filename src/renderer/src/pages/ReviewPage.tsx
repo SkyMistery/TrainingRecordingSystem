@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Button, CardContent, CardRoot } from '@ivao/atmosphere-react'
+import { Alert, Button } from '@ivao/atmosphere-react'
 import {
   ArrowLeft,
   Expand,
@@ -274,61 +274,65 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
     </div>
   )
 
-  if (theatre) {
-    return (
-      <div className="fixed inset-0 z-50 flex flex-col justify-center gap-3 bg-body p-6">
-        {player}
-        <div className="flex justify-center">
-          <Button variant="ghost" size="sm" onClick={() => setTheatre(false)}>
-            <Shrink className="size-4" aria-hidden />
-            Exit full window (Esc)
-          </Button>
-        </div>
-      </div>
-    )
-  }
-
+  // One tree for both layouts: switching to full window only changes classes,
+  // so the video element (position, zoom, wheel listener) is kept.
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => void window.api.closeReview()}>
-            <ArrowLeft className="size-4" aria-hidden />
-            Sessions
-          </Button>
-          <div>
-            <div className="font-head text-lg font-semibold">
-              <span className="font-mono">{metadata.position}</span> · {metadata.trainingType}
-            </div>
-            <div className="text-sm text-muted-foreground">
-              {metadata.date} · trainee {metadata.traineeVid}
-              {metadata.traineeName && ` (${metadata.traineeName})`}
+      {!theatre && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={() => void window.api.closeReview()}>
+              <ArrowLeft className="size-4" aria-hidden />
+              Sessions
+            </Button>
+            <div>
+              <div className="font-head text-lg font-semibold">
+                <span className="font-mono">{metadata.position}</span> · {metadata.trainingType}
+              </div>
+              <div className="text-sm text-muted-foreground">
+                {metadata.date} · trainee {metadata.traineeVid}
+                {metadata.traineeName && ` (${metadata.traineeName})`}
+              </div>
             </div>
           </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => void window.api.openNotesWindow()}
+              title="Your notes, on another monitor"
+            >
+              <NotebookPen className="size-4" aria-hidden />
+              Notes window
+            </Button>
+            <Button variant="outline" onClick={() => setTheatre(true)} title="Full window (F)">
+              <Expand className="size-4" aria-hidden />
+              Full window
+            </Button>
+          </div>
         </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={() => void window.api.openNotesWindow()}
-            title="Your notes, on another monitor"
-          >
-            <NotebookPen className="size-4" aria-hidden />
-            Notes window
-          </Button>
-          <Button variant="outline" onClick={() => setTheatre(true)} title="Full window (F)">
-            <Expand className="size-4" aria-hidden />
-            Full window
-          </Button>
-        </div>
-      </div>
+      )}
 
       {error && <Alert variant="destructive" title="Playback problem" description={error} />}
 
-      <CardRoot>
-        <CardContent className="pt-6">{player}</CardContent>
-      </CardRoot>
+      <div
+        className={
+          theatre
+            ? 'fixed inset-0 z-50 flex flex-col justify-center gap-3 bg-body p-6'
+            : 'rounded-lg border border-border bg-card p-6 shadow-xs'
+        }
+      >
+        {player}
+        {theatre && (
+          <div className="flex justify-center">
+            <Button variant="ghost" size="sm" onClick={() => setTheatre(false)}>
+              <Shrink className="size-4" aria-hidden />
+              Exit full window (Esc)
+            </Button>
+          </div>
+        )}
+      </div>
 
-      {markers.length > 0 && (
+      {!theatre && markers.length > 0 && (
         <div className="flex gap-3 overflow-x-auto pb-2" aria-label="Markers">
           {markers.map((marker) => {
             const active = marker.id === current?.id
@@ -367,11 +371,13 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
         </div>
       )}
 
-      <p className="text-center text-xs text-muted-foreground">
-        Space play/pause · ← → 5 s (Shift: 30 s) · [ ] previous/next marker · wheel or + − zoom, 0 reset · F full
-        window. Your notes are not shown here: open the notes window on another monitor, or the Companion page on a
-        tablet.
-      </p>
+      {!theatre && (
+        <p className="text-center text-xs text-muted-foreground">
+          Space play/pause · ← → 5 s (Shift: 30 s) · [ ] previous/next marker · wheel or + − zoom, 0 reset · F full
+          window. Your notes are not shown here: open the notes window on another monitor, or the Companion page on a
+          tablet.
+        </p>
+      )}
     </div>
   )
 }
