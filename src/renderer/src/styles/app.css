@@ -1,0 +1,28 @@
+@import 'tailwindcss';
+@import '@ivao/atmosphere-react/theme.css';
+
+@import '@fontsource/poppins/400.css';
+@import '@fontsource/poppins/500.css';
+@import '@fontsource/poppins/600.css';
+@import '@fontsource/poppins/700.css';
+@import '@fontsource-variable/nunito-sans/index.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+
+@source '../';
+
+/* Fonts are bundled with the app (no network access needed); the variable
+   Nunito Sans build registers under its own family name. */
+:root {
+  --ivao-font-sans: 'Nunito Sans Variable', 'Nunito Sans', sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  color: var(--foreground);
+  user-select: none;
+}

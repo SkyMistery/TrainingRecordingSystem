@@ -1,0 +1,23 @@
+appId: com.skymistery.trainingrecordingsystem
+productName: Training Recording System
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**/*
+  - package.json
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: TrainingRecordingSystem-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+publish:
+  provider: github
+  owner: SkyMistery
+  repo: TrainingRecordingSystem
+  releaseType: release

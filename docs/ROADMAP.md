@@ -1,0 +1,77 @@
+# Roadmap
+
+Training Recording System (TRS) helps IVAO trainers record a training session,
+mark significant moments while it happens, take voice notes on them, and review
+everything quickly during the debriefing.
+
+## Goals
+
+- Record the whole screen where Aurora runs (insets included) plus separate,
+  individually mutable audio sources (single applications, desktop, microphone).
+- Mark significant moments with a global hotkey, even while Aurora has focus.
+- Attach voice notes (push-to-talk) to moments, automatically transcribed.
+- Review the recording with a timeline of markers and ranges, share it on
+  Discord, while keeping the trainer's notes private on a second screen or a
+  tablet.
+- English UI, Day and Night themes, following the IVAO brand guidelines and the
+  Atmosphere design system.
+- Distributed as a Windows installer through GitHub Releases, with auto-update.
+
+## Milestones
+
+### M0 — Foundations
+- Repository, MIT licence, documentation.
+- Electron + TypeScript skeleton with Day/Night theming (Atmosphere tokens).
+- GitHub Actions: build check on every push, installer published to a GitHub
+  Release on every `v*` tag. Auto-update from GitHub Releases.
+
+### M1 — OBS connection and session setup
+- Connect to OBS Studio (>= 30.2) through obs-websocket v5 (built into OBS).
+- Guided setup: the app creates its **own OBS profile and scene** so the
+  trainer's existing OBS setup is never touched.
+- Monitor selection (full display capture, so Aurora insets are recorded).
+- Audio mixer: add/remove sources (application audio capture, desktop audio,
+  microphone), mute and volume — executed by OBS.
+- Recording format: hybrid MP4 + H.264, playable in-app and crash-safe.
+- Session metadata: trainee VID and name, position (e.g. `LIRF_APP`), training
+  type, date, trainer VID. Start/stop recording.
+
+### M2 — Markers
+- Global hotkeys (keyboard keys or mouse buttons) working while Aurora has focus.
+- **Point marker**: full-resolution screenshot taken by OBS + recording time.
+  The marker time is shifted back by a configurable **pre-roll** (default 10 s)
+  because mistakes are usually noticed after they happen.
+- **Range marker**: press once to open, press again to close. Ranges can be
+  adjusted later; a point marker can be converted into a range.
+- **Categories** (optional, configurable, coloured): assign them live with
+  shortcuts or later during review. Includes a "Positive" category.
+- Compact always-on-top status window: recording state, elapsed time, last
+  marker, voice note indicator, transcription queue.
+- Session data saved on every change (no data loss on crash).
+
+### M3 — Voice notes
+- Push-to-talk (hold) on keyboard key or mouse button.
+- The note attaches to the latest marker, or creates a new one.
+- While PTT is held the trainer's microphone is **muted in OBS**, so notes never
+  end up in the recording.
+- Local transcription with whisper.cpp (offline, free, automatic language
+  detection). The model is downloaded on first use to keep the installer small.
+
+### M4 — Review and Companion
+- Review window: video player, timeline with coloured markers and ranges,
+  previous/next marker, ±5 s / ±30 s, playback speed. **No notes are shown in
+  this window**, so it can be shared on Discord safely.
+- **Companion** — a local web page opened on another monitor, a PC or a tablet
+  (pairing via QR code + token). It shows the notes and transcriptions and
+  controls the app: during recording (marker, range, category, status) and
+  during review (play/pause, seek, jump to marker, edit notes and categories).
+- Edit markers, ranges, categories and transcriptions.
+
+### M5 — v1.0
+- Settings (hotkeys, pre-roll, categories, storage folder, theme, companion).
+- User guide, polish, first public release.
+
+## Later
+
+See [FUTURE.md](FUTURE.md) for proposals not scheduled yet (debriefing report,
+recording without OBS, Google Drive, more UI languages).
