@@ -130,7 +130,8 @@ export class ObsRecorder implements Recorder {
     return propertyItems
       .filter((item) => item.itemValue && item.itemEnabled !== false)
       .map((item) => {
-        const name = String(item.itemName)
+        // Built-in panels often have no model name (": 1920x1200 @ 1920,0").
+        const name = String(item.itemName).replace(/^\s*:\s*/, 'Display: ')
         const size = /(\d{3,5})\s*x\s*(\d{3,5})/.exec(name)
         return {
           id: String(item.itemValue),

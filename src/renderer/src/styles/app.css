@@ -27,6 +27,13 @@ body {
   user-select: none;
 }
 
+/* Atmosphere's Select sizes its list to the trigger height, which shows a
+   single option at a time; let it grow and scroll only when long. */
+[data-radix-select-viewport] {
+  height: auto !important;
+  max-height: min(20rem, var(--radix-select-content-available-height, 20rem));
+}
+
 /* Atmosphere's night --input equals the card colour, which hides input borders
    inside cards; lift it one step so fields stay visible. */
 .dark {
