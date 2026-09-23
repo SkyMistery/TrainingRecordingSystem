@@ -1,13 +1,16 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, ipcMain, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import type { Theme, ThemePreference, ThemeState } from '../shared/theme'
+import { Controller } from './controller'
 import { getSettings, updateSettings } from './settings'
 
 // Atmosphere page background (--body) for each theme, used before the UI paints.
 const BODY_COLOR: Record<Theme, string> = { day: '#ffffff', night: '#12131b' }
 
 let mainWindow: BrowserWindow | null = null
+let controller: Controller | null = null
+let quitting = false
 
 function effectiveTheme(): Theme {
   return nativeTheme.shouldUseDarkColors ? 'night' : 'day'
@@ -34,6 +37,14 @@ function createMainWindow(): void {
   })
 
   mainWindow.once('ready-to-show', () => mainWindow?.show())
+
+  // Closing the window while recording goes through the quit confirmation.
+  mainWindow.on('close', (event) => {
+    if (!quitting && controller?.isRecording()) {
+      event.preventDefault()
+      app.quit()
+    }
+  })
 
   // Links open in the default browser, never inside the app.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -65,9 +76,11 @@ function registerIpc(): void {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   applyThemePreference(getSettings().theme)
   registerIpc()
+  controller = new Controller()
+  await controller.init()
   createMainWindow()
 
   if (app.isPackaged) {
@@ -78,3 +91,25 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => app.quit())
+
+// Stop the recording cleanly and give OBS back the trainer's own profile.
+app.on('before-quit', (event) => {
+  if (quitting) return
+  event.preventDefault()
+  void (async () => {
+    if (controller?.isRecording() && mainWindow && !mainWindow.isDestroyed()) {
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        buttons: ['Stop recording and quit', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        message: 'A training session is being recorded.',
+        detail: 'Quitting stops the recording. The session and everything recorded so far are kept.'
+      })
+      if (response !== 0) return
+    }
+    quitting = true
+    await controller?.shutdown().catch((error: unknown) => console.error('Shutdown failed', error))
+    app.quit()
+  })()
+})

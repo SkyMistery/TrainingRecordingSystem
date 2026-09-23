@@ -26,3 +26,9 @@ body {
   color: var(--foreground);
   user-select: none;
 }
+
+/* Atmosphere's night --input equals the card colour, which hides input borders
+   inside cards; lift it one step so fields stay visible. */
+.dark {
+  --input: var(--ivao-color-fuselage-700);
+}
