@@ -45,11 +45,16 @@ export function HotkeyInput({ value, onChange, conflict, label }: HotkeyInputPro
           <Keyboard className="size-4" aria-hidden />
           {capturing ? 'Press a key or mouse button…' : (value?.label ?? 'Not set')}
         </Button>
-        {value && !capturing && (
-          <Button variant="ghost" size="icon" aria-label={`Clear ${label} hotkey`} onClick={() => onChange(null)}>
-            <X className="size-4" aria-hidden />
-          </Button>
-        )}
+        {/* Always rendered (hidden when unused) so rows keep the same width. */}
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={`Clear ${label} hotkey`}
+          className={value && !capturing ? undefined : 'invisible'}
+          onClick={() => onChange(null)}
+        >
+          <X className="size-4" aria-hidden />
+        </Button>
       </div>
       {capturing && <span className="text-xs text-muted-foreground">Esc cancels.</span>}
       {conflict && !capturing && (
