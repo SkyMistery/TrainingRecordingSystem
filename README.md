@@ -4,8 +4,8 @@ A desktop app for IVAO trainers: record a training session, mark significant
 moments while it happens, attach voice notes that are transcribed
 automatically, and review everything quickly during the debriefing.
 
-> Status: early development. Recording through OBS works (milestone M1);
-> markers come next. See the [roadmap](docs/ROADMAP.md).
+> Status: early development. Recording through OBS (M1) and markers with
+> global hotkeys (M2) work; voice notes come next. See the [roadmap](docs/ROADMAP.md).
 
 ## Features (planned for v1.0)
 
