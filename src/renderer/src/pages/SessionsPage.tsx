@@ -17,7 +17,7 @@ import {
   TableRoot,
   TableRow
 } from '@ivao/atmosphere-react'
-import { Circle, CircleAlert, FolderOpen, Settings2 } from 'lucide-react'
+import { Circle, CircleAlert, FolderOpen, Play, Settings2 } from 'lucide-react'
 import type { AppState, SessionMetadata, SessionSummary } from '@shared/types'
 import { formatDuration, todayIso } from '../format'
 
@@ -182,7 +182,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
         <CardHeader className="flex-row items-start justify-between gap-4">
           <div className="flex flex-col gap-1.5">
             <CardTitle>Sessions</CardTitle>
-            <CardDescription>Reviewing a session with its markers arrives in a later version.</CardDescription>
+            <CardDescription>Open a session to review it with the trainee during the debriefing.</CardDescription>
           </div>
           <Button variant="secondary" onClick={() => void window.api.openSessionsFolder()}>
             <FolderOpen className="size-4" aria-hidden />
@@ -202,7 +202,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
                   <TableHead>Type</TableHead>
                   <TableHead>Duration</TableHead>
                   <TableHead>Markers</TableHead>
-                  <TableHead className="text-right">Files</TableHead>
+                  <TableHead className="text-right" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -221,12 +221,23 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
                     <TableCell>{session.markerCount}</TableCell>
                     <TableCell className="text-right">
                       <Button
+                        variant="primary"
+                        size="sm"
+                        className="mr-1"
+                        disabled={state.recording !== null}
+                        onClick={() => void window.api.openReview(session.folder.split(/[\/]/).pop()!)}
+                      >
+                        <Play className="size-4" aria-hidden />
+                        Review
+                      </Button>
+                      <Button
                         variant="ghost"
                         size="sm"
+                        title="Open the session folder"
                         onClick={() => void window.api.openSessionsFolder(session.folder)}
                       >
                         <FolderOpen className="size-4" aria-hidden />
-                        Open
+                        Files
                       </Button>
                     </TableCell>
                   </TableRow>

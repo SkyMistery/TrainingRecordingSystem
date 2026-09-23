@@ -201,6 +201,9 @@ export interface AppState {
   markerSettings: MarkerSettings
   noteSettings: NoteSettings
   transcription: TranscriptionState
+  review: ReviewState | null
+  companion: CompanionInfo
+  companionSettings: CompanionSettings
   busy: boolean
 }
 
@@ -221,3 +224,76 @@ export interface NoteAudio {
   wav: ArrayBuffer
   durationMs: number
 }
+
+/** Playback position reported by the review player (extrapolate while playing). */
+export interface PlayerState {
+  positionMs: number
+  playing: boolean
+  rate: number
+  /** Epoch ms when the position was sampled. */
+  sampledAt: number
+}
+
+export type PlayerCommand =
+  | { type: 'toggle' }
+  | { type: 'play' }
+  | { type: 'pause' }
+  | { type: 'seek'; positionMs: number }
+  | { type: 'skip'; deltaMs: number }
+  | { type: 'marker'; direction: 1 | -1 }
+  | { type: 'rate'; rate: number }
+
+/** A finished session opened for the debriefing. */
+export interface ReviewState {
+  folderName: string
+  metadata: SessionMetadata
+  durationMs: number
+  hasRecording: boolean
+  markers: Marker[]
+  player: PlayerState
+}
+
+export interface CompanionSettings {
+  enabled: boolean
+  /** Reachable from other devices on the local network (tablet), not only this PC. */
+  lan: boolean
+  port: number
+}
+
+export interface CompanionInfo {
+  running: boolean
+  error: string | null
+  /** Pairing links: this PC first, then local network addresses when enabled. */
+  urls: string[]
+  /** QR code (data URL) for the first network link, or this PC's. */
+  qr: string | null
+  clients: number
+}
+
+/** What the Companion page receives: everything it shows, nothing else. */
+export interface CompanionState {
+  recording: RecordingState | null
+  review: ReviewState | null
+  categories: MarkerCategory[]
+  voiceNoteHotkey: string | null
+}
+
+/**
+ * Session edits and live actions available to every view: the desktop windows
+ * (through IPC) and the Companion page (through its WebSocket).
+ */
+export interface SessionCommands {
+  addMarker: []
+  toggleRange: []
+  startNote: []
+  stopNote: []
+  setMarkerCategory: [folderName: string, markerId: string, categoryId: string | null]
+  setMarkerTimes: [folderName: string, markerId: string, times: { timeMs?: number; endMs?: number | null }]
+  deleteMarker: [folderName: string, markerId: string]
+  setNoteText: [folderName: string, markerId: string, noteId: string, text: string | null]
+  deleteNote: [folderName: string, markerId: string, noteId: string]
+  retranscribeNote: [folderName: string, markerId: string, noteId: string]
+  playerCommand: [command: PlayerCommand]
+}
+
+export type SessionCommandName = keyof SessionCommands

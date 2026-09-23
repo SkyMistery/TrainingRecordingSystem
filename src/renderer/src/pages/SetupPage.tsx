@@ -23,6 +23,7 @@ import type {
   OutputScale
 } from '@shared/types'
 import { AudioMixer } from '../components/AudioMixer'
+import { CompanionCard } from '../components/CompanionCard'
 import { MarkersCard } from '../components/MarkersCard'
 import { VoiceNotesCard } from '../components/VoiceNotesCard'
 import { useAudioLevels } from '../hooks'
@@ -403,6 +404,7 @@ export function SetupPage({ state }: { state: AppState }): React.JSX.Element {
       <AudioCard state={state} save={save} />
       <MarkersCard settings={state.markerSettings} />
       <VoiceNotesCard state={state} />
+      <CompanionCard state={state} settings={state.companionSettings} />
       <ErrorAlert message={error} />
     </div>
   )

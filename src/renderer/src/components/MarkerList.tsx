@@ -2,6 +2,7 @@ import { Button } from '@ivao/atmosphere-react'
 import { Flag, Mic, MoveHorizontal, Trash2 } from 'lucide-react'
 import { mediaUrl } from '@shared/media'
 import type { Marker, MarkerCategory } from '@shared/types'
+import type { SendCommand } from '../commands'
 import { formatDuration } from '../format'
 import { NoteItem } from './NoteItem'
 
@@ -29,11 +30,7 @@ interface MarkerListProps {
   folderName: string
   openRangeId: string | null
   dictatingMarkerId: string | null
-  onCategoryChange: (markerId: string, categoryId: string | null) => void
-  onDelete: (markerId: string) => void
-  onNoteTextChange: (markerId: string, noteId: string, text: string | null) => void
-  onNoteRetranscribe: (markerId: string, noteId: string) => void
-  onNoteDelete: (markerId: string, noteId: string) => void
+  send: SendCommand
 }
 
 /** Newest first; each marker shows its screenshot, time, kind, category and voice notes. */
@@ -96,7 +93,9 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
                         key={category.id}
                         role="radio"
                         aria-checked={selected}
-                        onClick={() => props.onCategoryChange(marker.id, selected ? null : category.id)}
+                        onClick={() =>
+                          props.send('setMarkerCategory', props.folderName, marker.id, selected ? null : category.id)
+                        }
                         className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition-colors ${
                           selected
                             ? 'border-transparent font-semibold'
@@ -119,7 +118,7 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
                 variant="ghost"
                 size="icon"
                 aria-label={`Delete marker ${marker.number}`}
-                onClick={() => props.onDelete(marker.id)}
+                onClick={() => props.send('deleteMarker', props.folderName, marker.id)}
               >
                 <Trash2 className="size-4" aria-hidden />
               </Button>
@@ -131,9 +130,9 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
                     key={note.id}
                     note={note}
                     folderName={props.folderName}
-                    onTextChange={(text) => props.onNoteTextChange(marker.id, note.id, text)}
-                    onRetranscribe={() => props.onNoteRetranscribe(marker.id, note.id)}
-                    onDelete={() => props.onNoteDelete(marker.id, note.id)}
+                    onTextChange={(text) => props.send('setNoteText', props.folderName, marker.id, note.id, text)}
+                    onRetranscribe={() => props.send('retranscribeNote', props.folderName, marker.id, note.id)}
+                    onDelete={() => props.send('deleteNote', props.folderName, marker.id, note.id)}
                   />
                 ))}
               </div>

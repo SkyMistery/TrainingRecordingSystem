@@ -17,6 +17,15 @@ export default defineConfig({
         '@shared': resolve('src/shared')
       }
     },
-    plugins: [react(), tailwindcss()]
+    plugins: [react(), tailwindcss()],
+    build: {
+      rollupOptions: {
+        // The Companion page is served to other devices by the app's local web server.
+        input: {
+          index: resolve('src/renderer/index.html'),
+          companion: resolve('src/renderer/companion.html')
+        }
+      }
+    }
   }
 })

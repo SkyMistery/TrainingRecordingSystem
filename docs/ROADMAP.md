@@ -19,6 +19,8 @@ everything quickly during the debriefing.
 
 ## Milestones
 
+Status: M0–M3 released (v0.1–v0.4); M4 implemented, in testing.
+
 ### M0 — Foundations
 - Repository, MIT licence, documentation.
 - Electron + TypeScript skeleton with Day/Night theming (Atmosphere tokens).

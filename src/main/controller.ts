@@ -4,6 +4,12 @@ import { basename, join } from 'node:path'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import type {
   AppState,
+  CompanionSettings,
+  CompanionState,
+  PlayerCommand,
+  PlayerState,
+  SessionCommandName,
+  SessionCommands,
   AudioLevels,
   AudioSourceKind,
   CaptureConfig,
@@ -22,6 +28,9 @@ import type {
 } from '../shared/types'
 import { sameHotkey } from '../shared/hotkey'
 import { AudioCapture } from './audioWindow'
+import { CompanionServer, newCompanionToken } from './companion'
+import { sessionFilePath } from './media'
+import { openNotesWindow } from './notesWindow'
 import { GlobalHotkeys } from './hotkeys'
 import { ObsRecorder } from './recorder/ObsRecorder'
 import type { Recorder } from './recorder/Recorder'
@@ -68,14 +77,58 @@ export class Controller {
     console.error('Microphone error:', message)
     this.feedback('error')
   })
+  private readonly companion = new CompanionServer(
+    {
+      state: () => this.companionState(),
+      execute: (name, args) => this.execute(name, args),
+      changed: () => this.patch({ companion: this.companion.info() })
+    },
+    () => getSettings().companion,
+    () => getSettings().companionToken
+  )
+
+  /** Session edits and live actions shared by the desktop windows and the Companion page. */
+  private readonly commands: { [K in SessionCommandName]: (...args: SessionCommands[K]) => Promise<void> } = {
+    addMarker: () => this.addPointMarker(),
+    toggleRange: () => this.toggleRange(),
+    startNote: () => this.startNote(),
+    stopNote: () => this.stopNote(),
+    setMarkerCategory: async (folderName, markerId, categoryId) => {
+      await this.editSession(folderName, (session) => {
+        this.findMarker(session, markerId).categoryId = categoryId
+      })
+      this.feedback('category')
+    },
+    setMarkerTimes: (folderName, markerId, times) =>
+      this.editSession(folderName, (session) => {
+        const marker = this.findMarker(session, markerId)
+        const limit = session.recording?.durationMs ?? Number.MAX_SAFE_INTEGER
+        const timeMs = Math.round(Math.min(limit, Math.max(0, times.timeMs ?? marker.timeMs)))
+        let endMs = times.endMs === undefined ? marker.endMs : times.endMs
+        if (marker.kind === 'range' && endMs !== null) endMs = Math.round(Math.min(limit, Math.max(timeMs, endMs)))
+        marker.timeMs = timeMs
+        marker.endMs = marker.kind === 'range' ? endMs : null
+      }),
+    deleteMarker: (folderName, markerId) => this.deleteMarker(folderName, markerId),
+    setNoteText: (folderName, markerId, noteId, text) =>
+      this.editSession(folderName, (session) => {
+        const note = this.findNote(session, markerId, noteId)
+        note.text = text !== null && text.trim() !== (note.transcript ?? '') ? text.trim() : null
+      }),
+    deleteNote: (folderName, markerId, noteId) => this.deleteNote(folderName, markerId, noteId),
+    retranscribeNote: async (folderName, markerId, noteId) => {
+      await this.editSession(folderName, (session) => {
+        this.findNote(session, markerId, noteId).status = 'pending'
+      })
+      this.transcriber.enqueue(this.sessionFolder(folderName), noteId)
+    },
+    playerCommand: async (command) => this.sendPlayerCommand(command)
+  }
 
   constructor() {
     const settings = getSettings()
     this.transcriber = new Transcriber(this.store, {
-      noteChanged: (folder) => {
-        if (this.active?.folder === folder) this.publishRecording()
-        else this.broadcast('sessions:changed', null)
-      },
+      noteChanged: (folder) => void this.sessionChanged(folder),
       stateChanged: () => this.patch({ transcription: this.transcriptionState() })
     })
     this.state = {
@@ -83,8 +136,11 @@ export class Controller {
       recording: null,
       capture: settings.capture,
       markerSettings: settings.markers,
+      companionSettings: settings.companion,
       noteSettings: settings.notes,
       transcription: this.transcriptionState(),
+      review: null,
+      companion: { running: false, error: null, urls: [], qr: null, clients: 0 },
       busy: false
     }
     this.recorder = new ObsRecorder(
@@ -122,6 +178,9 @@ export class Controller {
     // Connect silently at startup; the Setup page shows the outcome.
     void this.connectObs().catch(() => undefined)
     void this.resumeTranscriptions()
+    // Persist the pairing secret generated on first run.
+    await updateSettings({ companionToken: getSettings().companionToken })
+    await this.companion.restart()
   }
 
   isRecording(): boolean {
@@ -133,6 +192,7 @@ export class Controller {
     if (this.active) await this.stopSession()
     this.audio.destroy()
     this.transcriber.cancelDownload()
+    await this.companion.stop()
     await this.recorder.disconnect().catch(() => undefined)
   }
 
@@ -191,29 +251,10 @@ export class Controller {
     handle('session:start', (metadata: SessionMetadata) => this.startSession(metadata))
     handle('session:stop', () => this.stopSession())
 
-    handle('markers:add', () => this.addPointMarker())
-    handle('markers:toggleRange', () => this.toggleRange())
-    handle('markers:setCategory', (markerId: string | null, categoryId: string | null) =>
-      this.setCategory(markerId, categoryId)
-    )
-    handle('markers:delete', (markerId: string) => this.deleteMarker(markerId))
+    handle('command', (name: SessionCommandName, args: unknown[]) => this.execute(name, args))
     handle('markers:saveSettings', async (markers: MarkerSettings) => {
       await updateSettings({ markers })
       this.patch({ markerSettings: markers })
-    })
-    handle('notes:start', () => this.startNote())
-    handle('notes:stop', () => this.stopNote())
-    handle('notes:setText', (markerId: string, noteId: string, text: string | null) =>
-      this.updateNote(markerId, noteId, (note) => {
-        note.text = text !== null && text.trim() !== (note.transcript ?? '') ? text.trim() : null
-      })
-    )
-    handle('notes:delete', (markerId: string, noteId: string) => this.deleteNote(markerId, noteId))
-    handle('notes:retranscribe', async (markerId: string, noteId: string) => {
-      await this.updateNote(markerId, noteId, (note) => {
-        note.status = 'pending'
-      })
-      this.transcriber.enqueue(this.requireActive().folder, noteId)
     })
     handle('notes:saveSettings', async (notes: NoteSettings) => {
       await updateSettings({ notes })
@@ -223,6 +264,23 @@ export class Controller {
     })
     handle('models:download', (model: WhisperModelId) => this.transcriber.downloadModel(model))
     handle('models:cancelDownload', () => this.transcriber.cancelDownload())
+    handle('review:open', (folderName: string) => this.openReview(folderName))
+    handle('review:close', () => this.patch({ review: null }))
+    handle('player:report', (player: PlayerState) => {
+      if (this.state.review) this.patch({ review: { ...this.state.review, player } })
+    })
+    handle('companion:save', async (companion: CompanionSettings) => {
+      await updateSettings({ companion })
+      this.patch({ companionSettings: companion })
+      await this.companion.restart()
+    })
+    handle('companion:newToken', async () => {
+      // Unpairs every device: they need the new link or QR code.
+      await updateSettings({ companionToken: newCompanionToken() })
+      await this.companion.restart()
+    })
+    handle('companion:openWindow', () => openNotesWindow(this.companion.pairUrl()))
+    handle('companion:openBrowser', () => shell.openExternal(this.companion.pairUrl()))
     handle('hotkeys:capture', () => this.hotkeys.captureNext())
     handle('hotkeys:cancelCapture', () => this.hotkeys.cancelCapture())
   }
@@ -366,7 +424,7 @@ export class Controller {
       this.run(() => this.startNote())
     } else {
       const category = categories.find((item) => sameHotkey(hotkey, item.hotkey))
-      if (category) this.run(() => this.setCategory(null, category.id))
+      if (category) this.run(() => this.tagLatestMarker(category.id))
     }
   }
 
@@ -430,34 +488,32 @@ export class Controller {
     await this.commitMarker(active, marker, 'rangeStart')
   }
 
-  /** `markerId` null means the most recent marker (used by category hotkeys). */
-  private async setCategory(markerId: string | null, categoryId: string | null): Promise<void> {
+  /** Category hotkeys tag the most recent marker of the session being recorded. */
+  private async tagLatestMarker(categoryId: string): Promise<void> {
     const active = this.requireActive()
-    const marker = markerId
-      ? active.session.markers.find((item) => item.id === markerId)
-      : active.session.markers.at(-1)
-    if (!marker) {
+    const latest = active.session.markers.at(-1)
+    if (!latest) {
       this.feedback('error')
       return
     }
-    marker.categoryId = categoryId
-    await this.persist()
-    this.publishRecording()
-    this.feedback('category')
+    await this.commands.setMarkerCategory(basename(active.folder), latest.id, categoryId)
   }
 
-  private async deleteMarker(markerId: string): Promise<void> {
-    const active = this.requireActive()
-    const marker = active.session.markers.find((item) => item.id === markerId)
-    if (!marker) return
-    active.session.markers = active.session.markers.filter((item) => item.id !== markerId)
-    if (active.openRangeId === markerId) active.openRangeId = null
-    await this.persist()
-    this.publishRecording()
+  private async deleteMarker(folderName: string, markerId: string): Promise<void> {
+    const folder = this.sessionFolder(folderName)
+    const marker = await this.editSession(folderName, (session) => {
+      const found = this.findMarker(session, markerId)
+      session.markers = session.markers.filter((item) => item.id !== markerId)
+      return found
+    })
+    if (this.active?.folder === folder && this.active.openRangeId === markerId) {
+      this.active.openRangeId = null
+      this.publishRecording()
+    }
     const files = [marker.screenshot, ...marker.notes.map((note) => note.audio)].filter(
       (file): file is string => !!file
     )
-    for (const file of files) await unlink(join(active.folder, file)).catch(() => undefined)
+    for (const file of files) await unlink(join(folder, file)).catch(() => undefined)
   }
 
   // --- Voice notes -----------------------------------------------------------------
@@ -522,7 +578,9 @@ export class Controller {
     const audio = await this.audio.stop(dictation.token)
     if (!audio) {
       // An accidental tap: don't leave behind a marker made only for this note.
-      if (dictation.createdMarker && this.active === active) await this.deleteMarker(dictation.markerId)
+      if (dictation.createdMarker && this.active === active) {
+        await this.deleteMarker(basename(active.folder), dictation.markerId)
+      }
       return
     }
     const noteNumber = active.session.markers.reduce((sum, marker) => sum + marker.notes.length, 0) + 1
@@ -546,24 +604,97 @@ export class Controller {
     this.transcriber.enqueue(active.folder, note.id)
   }
 
-  private async updateNote(markerId: string, noteId: string, change: (note: Note) => void): Promise<void> {
-    const active = this.requireActive()
-    await this.store.update(active.folder, (session) => {
-      const note = session.markers.find((marker) => marker.id === markerId)?.notes.find((item) => item.id === noteId)
-      if (note) change(note)
+  private async deleteNote(folderName: string, markerId: string, noteId: string): Promise<void> {
+    const note = await this.editSession(folderName, (session) => {
+      const marker = this.findMarker(session, markerId)
+      const found = this.findNote(session, markerId, noteId)
+      marker.notes = marker.notes.filter((item) => item.id !== noteId)
+      return found
     })
-    this.publishRecording()
+    await unlink(join(this.sessionFolder(folderName), note.audio)).catch(() => undefined)
   }
 
-  private async deleteNote(markerId: string, noteId: string): Promise<void> {
-    const active = this.requireActive()
-    const marker = active.session.markers.find((item) => item.id === markerId)
-    const note = marker?.notes.find((item) => item.id === noteId)
-    if (!marker || !note) return
-    marker.notes = marker.notes.filter((item) => item.id !== noteId)
-    await this.persist()
-    this.publishRecording()
-    await unlink(join(active.folder, note.audio)).catch(() => undefined)
+  // --- Session edits, review and Companion -------------------------------------------
+
+  private async execute(name: SessionCommandName, args: unknown[]): Promise<void> {
+    const command = this.commands[name] as ((...args: unknown[]) => Promise<void>) | undefined
+    if (!command) throw new Error(`Unknown command: ${name}`)
+    await command(...args)
+  }
+
+  /** Full path of a session folder given its name, refusing anything outside the sessions folder. */
+  private sessionFolder(folderName: string): string {
+    const folder = typeof folderName === 'string' ? sessionFilePath([folderName]) : null
+    if (!folder || folderName.includes('/') || folderName.includes('\\')) throw new Error('Unknown session')
+    return folder
+  }
+
+  private findMarker(session: SessionFile, markerId: string): Marker {
+    const marker = session.markers.find((item) => item.id === markerId)
+    if (!marker) throw new Error('Marker not found')
+    return marker
+  }
+
+  private findNote(session: SessionFile, markerId: string, noteId: string): Note {
+    const note = this.findMarker(session, markerId).notes.find((item) => item.id === noteId)
+    if (!note) throw new Error('Note not found')
+    return note
+  }
+
+  /**
+   * Applies a change to a session — the one being recorded or any finished
+   * one — saves it, and refreshes every view that shows it.
+   */
+  private async editSession<T>(folderName: string, change: (session: SessionFile) => T): Promise<T> {
+    const folder = this.sessionFolder(folderName)
+    let result!: T
+    const session = await this.store.update(folder, (current) => {
+      result = change(current)
+    })
+    await this.sessionChanged(folder, session)
+    return result
+  }
+
+  private async sessionChanged(folder: string, session?: SessionFile): Promise<void> {
+    if (this.active?.folder === folder) this.publishRecording()
+    const review = this.state.review
+    if (review && sessionFilePath([review.folderName]) === folder) {
+      const current = session ?? (await this.store.update(folder, () => undefined))
+      this.patch({ review: { ...review, markers: structuredClone(current.markers) } })
+    }
+    this.broadcast('sessions:changed', null)
+  }
+
+  private async openReview(folderName: string): Promise<void> {
+    const folder = this.sessionFolder(folderName)
+    if (this.active?.folder === folder) throw new Error('This session is still being recorded')
+    const session = await this.store.update(folder, () => undefined)
+    this.patch({
+      review: {
+        folderName,
+        metadata: session.metadata,
+        durationMs: session.recording?.durationMs ?? 0,
+        hasRecording: Boolean(session.recording?.file),
+        markers: structuredClone(session.markers),
+        player: { positionMs: 0, playing: false, rate: 1, sampledAt: Date.now() }
+      }
+    })
+    await this.transcriber.resume(folder, session)
+  }
+
+  /** The review player lives in the main window; other views steer it through here. */
+  private sendPlayerCommand(command: PlayerCommand): void {
+    if (!this.state.review) throw new Error('No session is open for review')
+    this.broadcast('player:command', command)
+  }
+
+  private companionState(): CompanionState {
+    return {
+      recording: this.state.recording,
+      review: this.state.review,
+      categories: this.state.markerSettings.categories,
+      voiceNoteHotkey: this.state.markerSettings.hotkeys.voiceNote?.label ?? null
+    }
   }
 
   /** Transcribes notes left over from a previous run (app closed mid-queue). */
@@ -637,9 +768,10 @@ export class Controller {
   private patch(partial: Partial<AppState>): void {
     this.state = { ...this.state, ...partial }
     this.broadcast('state:changed', this.state)
+    this.companion.broadcast()
   }
 
-  private broadcast(channel: string, payload: AppState | AudioLevels | MarkerFeedback | null): void {
+  private broadcast(channel: string, payload: AppState | AudioLevels | MarkerFeedback | PlayerCommand | null): void {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send(channel, payload)
     }

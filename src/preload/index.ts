@@ -7,6 +7,7 @@ import type {
   AudioSourceKind,
   AudioTargetOption,
   CaptureConfig,
+  CompanionSettings,
   DisplayOption,
   Hotkey,
   MarkerFeedback,
@@ -14,6 +15,10 @@ import type {
   NoteAudio,
   NoteSettings,
   ObsConnectionConfig,
+  PlayerCommand,
+  PlayerState,
+  SessionCommandName,
+  SessionCommands,
   SessionMetadata,
   SessionSummary,
   WhisperModelId
@@ -62,22 +67,23 @@ const api = {
   startSession: (metadata: SessionMetadata) => invoke<void>('session:start', metadata),
   stopSession: () => invoke<void>('session:stop'),
 
-  addMarker: () => invoke<void>('markers:add'),
-  toggleRange: () => invoke<void>('markers:toggleRange'),
-  setMarkerCategory: (markerId: string | null, categoryId: string | null) =>
-    invoke<void>('markers:setCategory', markerId, categoryId),
-  deleteMarker: (markerId: string) => invoke<void>('markers:delete', markerId),
+  /** Session edits and live actions (markers, notes, player), shared with the Companion page. */
+  command: <K extends SessionCommandName>(name: K, ...args: SessionCommands[K]) => invoke<void>('command', name, args),
   saveMarkerSettings: (settings: MarkerSettings) => invoke<void>('markers:saveSettings', settings),
   onMarkerFeedback: (listener: (kind: MarkerFeedback) => void) => subscribe('marker:feedback', listener),
-  startNote: () => invoke<void>('notes:start'),
-  stopNote: () => invoke<void>('notes:stop'),
-  setNoteText: (markerId: string, noteId: string, text: string | null) =>
-    invoke<void>('notes:setText', markerId, noteId, text),
-  deleteNote: (markerId: string, noteId: string) => invoke<void>('notes:delete', markerId, noteId),
-  retranscribeNote: (markerId: string, noteId: string) => invoke<void>('notes:retranscribe', markerId, noteId),
   saveNoteSettings: (settings: NoteSettings) => invoke<void>('notes:saveSettings', settings),
   downloadModel: (model: WhisperModelId) => invoke<void>('models:download', model),
   cancelModelDownload: () => invoke<void>('models:cancelDownload'),
+
+  openReview: (folderName: string) => invoke<void>('review:open', folderName),
+  closeReview: () => invoke<void>('review:close'),
+  reportPlayer: (player: PlayerState) => invoke<void>('player:report', player),
+  onPlayerCommand: (listener: (command: PlayerCommand) => void) => subscribe('player:command', listener),
+
+  saveCompanionSettings: (settings: CompanionSettings) => invoke<void>('companion:save', settings),
+  newCompanionToken: () => invoke<void>('companion:newToken'),
+  openNotesWindow: () => invoke<void>('companion:openWindow'),
+  openCompanionInBrowser: () => invoke<void>('companion:openBrowser'),
 
   // Hidden microphone window.
   onAudioCommand: (listener: (command: AudioCommand) => void) => subscribe('audio:command', listener),

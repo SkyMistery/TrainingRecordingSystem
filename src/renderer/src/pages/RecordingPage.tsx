@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Alert, Button, CardContent, CardDescription, CardHeader, CardRoot, CardTitle } from '@ivao/atmosphere-react'
 import { CircleAlert, Flag, Mic, MoveHorizontal, Square } from 'lucide-react'
 import type { AppState, RecordingState } from '@shared/types'
+import type { SendCommand } from '../commands'
 import { AudioMixer } from '../components/AudioMixer'
 import { MarkerList } from '../components/MarkerList'
 import { formatDuration } from '../format'
@@ -20,6 +21,7 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
     setError(null)
     action().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }
+  const send: SendCommand = (name, ...args) => run(() => window.api.command(name, ...args))
 
   return (
     <div className="flex flex-col gap-6">
@@ -85,19 +87,19 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
               title="Hold to dictate a voice note"
               onPointerDown={(event) => {
                 event.currentTarget.setPointerCapture(event.pointerId)
-                run(() => window.api.startNote())
+                send('startNote')
               }}
-              onPointerUp={() => run(() => window.api.stopNote())}
-              onPointerCancel={() => run(() => window.api.stopNote())}
+              onPointerUp={() => send('stopNote')}
+              onPointerCancel={() => send('stopNote')}
             >
               <Mic className="size-4" aria-hidden />
               {recording.dictatingMarkerId ? 'Release to save' : 'Hold to dictate'}
             </Button>
-            <Button variant="outline" onClick={() => run(() => window.api.addMarker())}>
+            <Button variant="outline" onClick={() => send('addMarker')}>
               <Flag className="size-4" aria-hidden />
               Add marker
             </Button>
-            <Button variant="outline" onClick={() => run(() => window.api.toggleRange())}>
+            <Button variant="outline" onClick={() => send('toggleRange')}>
               <MoveHorizontal className="size-4" aria-hidden />
               {recording.openRangeId ? 'End range' : 'Start range'}
             </Button>
@@ -110,11 +112,7 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
             folderName={recording.folderName}
             openRangeId={recording.openRangeId}
             dictatingMarkerId={recording.dictatingMarkerId}
-            onNoteTextChange={(markerId, noteId, text) => run(() => window.api.setNoteText(markerId, noteId, text))}
-            onNoteRetranscribe={(markerId, noteId) => run(() => window.api.retranscribeNote(markerId, noteId))}
-            onNoteDelete={(markerId, noteId) => run(() => window.api.deleteNote(markerId, noteId))}
-            onCategoryChange={(markerId, categoryId) => run(() => window.api.setMarkerCategory(markerId, categoryId))}
-            onDelete={(markerId) => run(() => window.api.deleteMarker(markerId))}
+            send={send}
           />
         </CardContent>
       </CardRoot>

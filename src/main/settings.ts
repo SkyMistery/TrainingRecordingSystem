@@ -1,9 +1,10 @@
+import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import type { ThemePreference } from '../shared/theme'
-import type { CaptureConfig, Hotkey, MarkerSettings, NoteSettings } from '../shared/types'
+import type { CaptureConfig, CompanionSettings, Hotkey, MarkerSettings, NoteSettings } from '../shared/types'
 
 export interface Settings {
   theme: ThemePreference
@@ -18,6 +19,9 @@ export interface Settings {
   trainerVid: string
   markers: MarkerSettings
   notes: NoteSettings
+  companion: CompanionSettings
+  /** Secret that pairs Companion devices; a new one unpairs them all. */
+  companionToken: string
   /** Trainer's own OBS profile and scene collection, to restore on exit. */
   obsPreviousWorkspace: { profile: string; collection: string } | null
   /** Last position of the status window, in screen coordinates. */
@@ -70,6 +74,8 @@ const defaults = (): Settings => ({
     transcribe: true,
     attachWindowSeconds: 60
   },
+  companion: { enabled: true, lan: false, port: 17645 },
+  companionToken: randomBytes(24).toString('hex'),
   obsPreviousWorkspace: null,
   statusWindowPosition: null
 })
@@ -89,6 +95,7 @@ export function getSettings(): Settings {
         obs: { ...base.obs, ...stored.obs },
         capture: { ...base.capture, ...stored.capture },
         notes: { ...base.notes, ...stored.notes },
+        companion: { ...base.companion, ...stored.companion },
         markers: {
           ...base.markers,
           ...stored.markers,
