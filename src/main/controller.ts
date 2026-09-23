@@ -86,7 +86,8 @@ export class Controller {
         obs: {
           host: config.host.trim() || '127.0.0.1',
           port: config.port || 4455,
-          passwordEncrypted: config.password !== undefined ? encryptSecret(config.password) : current.passwordEncrypted
+          passwordEncrypted:
+            config.password !== undefined ? encryptSecret(config.password.trim()) : current.passwordEncrypted
         }
       })
       await this.connectObs()
@@ -255,11 +256,19 @@ export class Controller {
   }
 }
 
+/** obs-websocket close code for authentication problems. */
+const OBS_AUTH_FAILED = 4009
+
 function describeObsError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
+  const code = (error as { code?: number }).code
+  if (code === OBS_AUTH_FAILED || /authentication/i.test(message)) {
+    return /missing/i.test(message)
+      ? 'OBS requires a password: paste the one shown in OBS (Tools → WebSocket Server Settings → Show Connect Info).'
+      : 'OBS rejected the password. Paste it again from OBS (Tools → WebSocket Server Settings → Show Connect Info).'
+  }
   if (/ECONNREFUSED|connect|socket|closed/i.test(message) && !/too old/.test(message)) {
     return 'Cannot reach OBS. Make sure OBS is running and the WebSocket server is enabled (Tools → WebSocket Server Settings).'
   }
-  if (/auth/i.test(message)) return 'OBS rejected the password. Check the WebSocket server password.'
   return message
 }
