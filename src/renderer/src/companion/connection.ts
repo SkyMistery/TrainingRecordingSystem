@@ -31,6 +31,7 @@ export function useCompanionConnection(): Connection {
       socket.current = ws
       let opened = false
       ws.onopen = () => {
+        if (socket.current !== ws) return
         opened = true
         setStatus('connected')
       }
@@ -47,6 +48,9 @@ export function useCompanionConnection(): Connection {
         }
       }
       ws.onclose = () => {
+        // A socket already replaced (reconnect, or React re-running the effect)
+        // must not clear the live one.
+        if (socket.current !== ws) return
         socket.current = null
         for (const request of pending.current.values()) request.reject(new Error('Disconnected'))
         pending.current.clear()
