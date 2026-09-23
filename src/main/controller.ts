@@ -178,7 +178,7 @@ export class Controller {
     this.active = null
     const recording = active.session.recording
     if (recording) {
-      recording.durationMs = durationMs ?? Date.now() - Date.parse(recording.startedAt)
+      recording.durationMs = Math.round(durationMs ?? Date.now() - Date.parse(recording.startedAt))
       if (outputPath) {
         try {
           recording.file = await adoptRecording(active.folder, outputPath)
