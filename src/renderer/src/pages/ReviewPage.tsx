@@ -19,11 +19,11 @@ import { mediaUrl } from '@shared/media'
 import { byTime, currentMarker, nextMarker, previousMarker } from '@shared/markers'
 import type { AppState, PlayerCommand, ReviewState } from '@shared/types'
 import { categoryColor } from '../components/MarkerList'
+import { PlaybackRates } from '../components/PlaybackRates'
 import { Timeline } from '../components/Timeline'
 import { useZoom } from '../components/useZoom'
 import { formatDuration } from '../format'
 
-const RATES = [0.5, 1, 1.25, 1.5, 2]
 const REPORT_INTERVAL_MS = 400
 
 /**
@@ -244,22 +244,8 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
             <ZoomIn className="size-4" aria-hidden />
           </Button>
         </div>
-        <div className="ml-2 flex gap-1" role="radiogroup" aria-label="Playback speed">
-          {RATES.map((value) => (
-            <button
-              key={value}
-              role="radio"
-              aria-checked={rate === value}
-              onClick={() => apply({ type: 'rate', rate: value })}
-              className={`rounded-sm px-2 py-1 font-mono text-xs ${
-                rate === value
-                  ? 'bg-atmos-700 text-white dark:bg-fuselage-50 dark:text-fuselage-800'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {value}×
-            </button>
-          ))}
+        <div className="ml-2">
+          <PlaybackRates rate={rate} onChange={(value) => apply({ type: 'rate', rate: value })} />
         </div>
       </div>
 

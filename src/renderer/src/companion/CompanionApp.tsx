@@ -20,6 +20,7 @@ import type { CompanionState, Marker, PlayerCommand, RecordingState, ReviewState
 import type { SendCommand } from '../commands'
 import { MarkerList, categoryColor, markerTimeLabel, textOn } from '../components/MarkerList'
 import { NoteItem } from '../components/NoteItem'
+import { PlaybackRates } from '../components/PlaybackRates'
 import { Timeline } from '../components/Timeline'
 import { formatDuration } from '../format'
 import { useNow } from '../hooks'
@@ -284,6 +285,9 @@ function ReviewView({
         >
           <SkipForward className="size-4" aria-hidden />
         </Button>
+      </div>
+      <div className="flex justify-center">
+        <PlaybackRates rate={review.player.rate} onChange={(rate) => player({ type: 'rate', rate })} />
       </div>
 
       <Timeline
