@@ -13,14 +13,23 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # Create the release up front as a draft: when electron-builder creates it
+      # itself, its parallel uploads can race and produce duplicate releases.
+      - name: Create draft release
+        shell: bash
+        run: gh release create "$TAG" --draft --title "${TAG#v}" --generate-notes
       - run: npm run release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish release
+        shell: bash
+        run: gh release edit "$TAG" --draft=false --latest

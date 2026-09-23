@@ -20,4 +20,4 @@ publish:
   provider: github
   owner: SkyMistery
   repo: TrainingRecordingSystem
-  releaseType: release
+  releaseType: draft
