@@ -33,7 +33,8 @@ export function App(): React.JSX.Element {
         onThemeChange={setPreference}
       />
       <main className="flex-1 overflow-auto">
-        <div className="container max-w-5xl py-8">
+        {/* The review player uses the whole width: the recording is Full HD. */}
+        <div className={review ? 'px-6 py-4' : 'container max-w-5xl py-8'}>
           {state &&
             (recording ? (
               <RecordingPage state={state} recording={recording} />

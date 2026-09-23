@@ -11,13 +11,16 @@ import {
   Shrink,
   SkipBack,
   SkipForward,
-  VideoOff
+  VideoOff,
+  ZoomIn,
+  ZoomOut
 } from 'lucide-react'
 import { mediaUrl } from '@shared/media'
 import { byTime, currentMarker, nextMarker, previousMarker } from '@shared/markers'
 import type { AppState, PlayerCommand, ReviewState } from '@shared/types'
 import { categoryColor } from '../components/MarkerList'
 import { Timeline } from '../components/Timeline'
+import { useZoom } from '../components/useZoom'
 import { formatDuration } from '../format'
 
 const RATES = [0.5, 1, 1.25, 1.5, 2]
@@ -95,6 +98,8 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
     }
   }, [])
 
+  const { zoom, frameProps, zoomBy, reset: resetZoom } = useZoom(() => apply({ type: 'toggle' }))
+
   // Commands from the notes window and Companion devices.
   useEffect(() => window.api.onPlayerCommand(apply), [apply])
 
@@ -112,6 +117,10 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
         '[': () => apply({ type: 'marker', direction: -1 }),
         ']': () => apply({ type: 'marker', direction: 1 }),
         f: () => setTheatre((value) => !value),
+        '+': () => zoomBy(1.5),
+        '=': () => zoomBy(1.5),
+        '-': () => zoomBy(1 / 1.5),
+        '0': () => resetZoom(),
         Escape: () => setTheatre(false)
       }
       const action = actions[event.key]
@@ -122,7 +131,7 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [apply])
+  }, [apply, zoomBy, resetZoom])
 
   const { metadata } = review
   const src = mediaUrl(review.folderName, 'recording.mp4')
@@ -130,33 +139,44 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
   const player = (
     <div className="flex flex-col gap-3">
       {review.hasRecording ? (
-        <video
-          ref={video}
-          src={src}
-          className={`w-full rounded-md bg-black ${theatre ? 'max-h-[calc(100vh-11rem)]' : 'max-h-[62vh]'}`}
-          onClick={() => apply({ type: 'toggle' })}
-          onLoadedMetadata={(event) => setVideoDurationMs(event.currentTarget.duration * 1000)}
-          onTimeUpdate={(event) => {
-            setPositionMs(event.currentTarget.currentTime * 1000)
-            report(false)
-          }}
-          onPlay={() => {
-            setPlaying(true)
-            report(true)
-          }}
-          onPause={() => {
-            setPlaying(false)
-            report(true)
-          }}
-          onSeeked={() => report(true)}
-          onRateChange={(event) => {
-            setRate(event.currentTarget.playbackRate)
-            report(true)
-          }}
-          onError={() =>
-            setError('The recording could not be played. It may still be finishing, or the file is missing.')
-          }
-        />
+        <div
+          {...frameProps}
+          className={`relative mx-auto w-fit max-w-full overflow-hidden rounded-md bg-black ${zoom.scale > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
+          title="Click: play/pause · Wheel: zoom · Drag: move · Double-click: reset zoom"
+        >
+          <video
+            ref={video}
+            src={src}
+            className={`block origin-top-left ${theatre ? 'max-h-[calc(100vh-10rem)]' : 'max-h-[calc(100vh-19rem)]'}`}
+            style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})` }}
+            onLoadedMetadata={(event) => setVideoDurationMs(event.currentTarget.duration * 1000)}
+            onTimeUpdate={(event) => {
+              setPositionMs(event.currentTarget.currentTime * 1000)
+              report(false)
+            }}
+            onPlay={() => {
+              setPlaying(true)
+              report(true)
+            }}
+            onPause={() => {
+              setPlaying(false)
+              report(true)
+            }}
+            onSeeked={() => report(true)}
+            onRateChange={(event) => {
+              setRate(event.currentTarget.playbackRate)
+              report(true)
+            }}
+            onError={() =>
+              setError('The recording could not be played. It may still be finishing, or the file is missing.')
+            }
+          />
+          {zoom.scale > 1 && (
+            <span className="pointer-events-none absolute right-2 top-2 rounded-sm bg-black/70 px-1.5 py-0.5 font-mono text-xs text-white">
+              {zoom.scale.toFixed(1)}×
+            </span>
+          )}
+        </div>
       ) : (
         <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-md bg-fuselage-100 text-muted-foreground dark:bg-fuselage-900">
           <VideoOff className="size-8" aria-hidden />
@@ -204,7 +224,27 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
         >
           <SkipForward className="size-4" aria-hidden />
         </Button>
-        <div className="ml-4 flex gap-1" role="radiogroup" aria-label="Playback speed">
+        <div className="ml-4 flex gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Zoom out"
+            title="Zoom out (−)"
+            onClick={() => zoomBy(1 / 1.5)}
+          >
+            <ZoomOut className="size-4" aria-hidden />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Zoom in"
+            title="Zoom in (+), or use the mouse wheel on the video"
+            onClick={() => zoomBy(1.5)}
+          >
+            <ZoomIn className="size-4" aria-hidden />
+          </Button>
+        </div>
+        <div className="ml-2 flex gap-1" role="radiogroup" aria-label="Playback speed">
           {RATES.map((value) => (
             <button
               key={value}
@@ -328,8 +368,9 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
       )}
 
       <p className="text-center text-xs text-muted-foreground">
-        Space play/pause · ← → 5 s (Shift: 30 s) · [ ] previous/next marker · F full window. Your notes are not shown
-        here: open the notes window on another monitor, or the Companion page on a tablet.
+        Space play/pause · ← → 5 s (Shift: 30 s) · [ ] previous/next marker · wheel or + − zoom, 0 reset · F full
+        window. Your notes are not shown here: open the notes window on another monitor, or the Companion page on a
+        tablet.
       </p>
     </div>
   )
