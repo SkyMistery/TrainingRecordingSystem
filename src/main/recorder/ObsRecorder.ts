@@ -158,8 +158,9 @@ export class ObsRecorder implements Recorder {
   async listAudioTargets(kind: AudioSourceKind): Promise<AudioTargetOption[]> {
     // OBS only lists applications/devices through an input of that kind, so a
     // hidden probe input is created and removed.
-    const probe = `${PROBE_PREFIX}${kind}`
-    await this.removeInputIfExists(probe)
+    // A unique name, so two lists requested at once don't collide; leftovers
+    // from a crash are removed on the next connection.
+    const probe = `${PROBE_PREFIX}${kind} ${Math.random().toString(36).slice(2, 8)}`
     await this.obs.call('CreateInput', {
       sceneName: SCENE,
       inputName: probe,
