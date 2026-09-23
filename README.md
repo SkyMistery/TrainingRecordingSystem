@@ -2,56 +2,67 @@
 
 A desktop app for IVAO trainers: record a training session, mark significant
 moments while it happens, attach voice notes that are transcribed
-automatically, and review everything quickly during the debriefing.
+automatically, and review everything during the debriefing — sharing the
+recording on Discord while your notes stay on another screen or a tablet.
 
-> Status: early development. Recording through OBS (M1), markers with global
-> hotkeys (M2) and transcribed voice notes (M3) work; the review player comes
-> next. See the [roadmap](docs/ROADMAP.md).
+> Status: early development. Recording (M1), markers (M2) and voice notes (M3)
+> are released; the review player and Companion (M4) are done and tested,
+> release pending. See the [roadmap](docs/ROADMAP.md).
 
-## Features (planned for v1.0)
+## Features
 
-- Full-screen recording of the monitor where Aurora runs, with separate,
-  mutable audio sources (single applications, desktop audio, microphone),
-  powered by OBS Studio.
-- Global hotkeys that work while Aurora has focus: point markers with an
-  instant screenshot, range markers, optional colour-coded categories.
-- Configurable pre-roll: markers are placed a few seconds before the key press.
-- Push-to-talk voice notes, transcribed offline with Whisper. Your microphone
+- Full-screen recording of the monitor where Aurora runs (insets included),
+  with separate, mutable audio sources (single applications, desktop audio,
+  microphone) — powered by OBS Studio, using its own profile and scenes.
+- Global hotkeys that work while Aurora has focus: point markers with a
+  full-resolution screenshot, range markers, optional colour-coded categories,
+  configurable pre-roll.
+- Push-to-talk voice notes, transcribed offline with Whisper; your microphone
   is muted in the recording while you dictate.
-- Review player with a timeline of markers, safe to share on Discord: notes are
-  shown only on your second screen or on the Companion page (PC or tablet).
-- Day and Night themes.
+- Review player with a timeline of markers and ranges, zoom, speed control and
+  keyboard shortcuts — safe to share: it never shows your notes.
+- Companion page for your notes and remote control: a window on a second
+  monitor, or a phone/tablet paired with a QR code.
+- Day and Night themes following the IVAO brand and the Atmosphere design
+  system. English UI.
 
 ## Requirements
 
 - Windows 10 (2004) or later.
-- [OBS Studio](https://obsproject.com/) 30.2 or later, with the WebSocket
+- [OBS Studio](https://obsproject.com/) 30.2 or later with the WebSocket
   server enabled (Tools → WebSocket Server Settings).
 
 ## Install
 
 Download the latest `TrainingRecordingSystem-Setup-x.y.z.exe` from
 [Releases](https://github.com/SkyMistery/TrainingRecordingSystem/releases).
-The installer is not code-signed yet, so Windows SmartScreen may show a
-warning: choose **More info → Run anyway**. The app updates itself when a new
-release is published.
+The installer is not code-signed, so Windows SmartScreen may warn: choose
+**More info → Run anyway**. The app updates itself from GitHub Releases.
+
+Then follow the [user guide](docs/USER_GUIDE.md).
 
 ## Development
 
 ```bash
 npm install
-npm run dev        # run the app with hot reload
+npm run dev          # app with hot reload (downloads whisper.cpp on first run)
 npm run typecheck
-npm run dist       # build the installer locally into dist/
+npm run format       # Prettier
+npm run build        # production bundle in out/; run it with: npx electron .
+npm run dist         # Windows installer in dist/
 ```
 
-Releasing: bump `version` in `package.json`, commit, then push a matching tag
-(`git tag v0.1.0 && git push --tags`). GitHub Actions builds the installer and
-publishes the release.
+End-to-end tests drive the real app, OBS and microphone: see
+[tests/e2e/README.md](tests/e2e/README.md).
+
+Releasing: bump `version` in `package.json`, commit, push, then push a
+matching tag (`git tag v0.5.0 && git push origin v0.5.0`). GitHub Actions builds
+the installer and publishes one release with the auto-update files.
 
 ## Documentation
 
-- [Roadmap](docs/ROADMAP.md)
+- [User guide](docs/USER_GUIDE.md)
+- [Roadmap and status](docs/ROADMAP.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Future proposals](docs/FUTURE.md)
 
@@ -60,7 +71,9 @@ publishes the release.
 The UI follows the [IVAO brand guidelines](https://brand.ivao.aero) and is
 built with [Atmosphere](https://github.com/ivaoaero/atmosphere), IVAO's design
 system (LGPL-3.0). Fonts (Poppins, Nunito Sans, IBM Plex Mono) are bundled via
-Fontsource under the SIL Open Font License.
+Fontsource under the SIL Open Font License. Transcription uses
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT) and Whisper
+models.
 
 ## Licence
 

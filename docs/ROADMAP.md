@@ -19,7 +19,16 @@ everything quickly during the debriefing.
 
 ## Milestones
 
-Status: M0–M3 released (v0.1–v0.4); M4 implemented, in testing.
+Status (2026-09-24):
+
+| Milestone | State |
+|---|---|
+| M0 Foundations | done — v0.1.0 |
+| M1 OBS and session setup | done — v0.2.0 |
+| M2 Markers | done — v0.3.0 |
+| M3 Voice notes | done — v0.4.0 |
+| M4 Review and Companion | implemented and tested by the trainer on PC and phone; **not released yet** (next: v0.5.0) |
+| M5 v1.0 | to do |
 
 ### M0 — Foundations
 - Repository, MIT licence, documentation.
@@ -68,10 +77,27 @@ Status: M0–M3 released (v0.1–v0.4); M4 implemented, in testing.
   controls the app: during recording (marker, range, category, status) and
   during review (play/pause, seek, jump to marker, edit notes and categories).
 - Edit markers, ranges, categories and transcriptions.
+- Done, plus: zoom/pan on the video, full-window mode, playback speed in the
+  Companion, phone-friendly layout, Public-network and firewall guidance,
+  microphone lookup by name when its id changes.
 
 ### M5 — v1.0
-- Settings (hotkeys, pre-roll, categories, storage folder, theme, companion).
-- User guide, polish, first public release.
+- Settings still missing: sessions folder location; delete a session from the
+  list; retranscribe notes of finished sessions from the sessions list.
+- App icon (the IVAO logo only with IVAO PR approval — ask pr@ivao.aero).
+- Installer: firewall prompt names the app; code signing is not planned
+  (SmartScreen warning documented).
+- Status window: show the transcription queue.
+- In-app link to the user guide; first-run checklist (OBS, display, audio,
+  microphone, model).
+- User guide (docs/USER_GUIDE.md) review, polish, v1.0 release.
+
+### Known issues / notes
+- Development mode (`npm run dev`) serves the Companion unbundled: phones may
+  show a blank page; test phones with the production build (`npm run build`
+  then `electron .`).
+- The Windows Firewall rule created in development is for `electron.exe`;
+  the installed app asks again under its own name.
 
 ## Later
 
