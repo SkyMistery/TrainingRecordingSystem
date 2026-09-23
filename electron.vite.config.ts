@@ -19,6 +19,10 @@ export default defineConfig({
     },
     plugins: [react(), tailwindcss()],
     build: {
+      // The Companion page also runs on phones and tablets: target the same
+      // browsers as Tailwind v4 and Atmosphere rather than Electron's Chromium only.
+      target: ['chrome111', 'edge111', 'safari16.4', 'firefox128'],
+      cssTarget: ['chrome111', 'edge111', 'safari16.4', 'firefox128'],
       rollupOptions: {
         // The Companion page is served to other devices by the app's local web server.
         input: {

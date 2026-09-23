@@ -68,7 +68,11 @@ function isPublicNetwork(): Promise<boolean> {
   return new Promise((resolve) => {
     execFile(
       'powershell',
-      ['-NoProfile', '-Command', '@(Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq "Public" }).Count'],
+      [
+        '-NoProfile',
+        '-Command',
+        '@(Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq "Public" }).Count'
+      ],
       { windowsHide: true, timeout: 10_000 },
       (error, stdout) => resolve(!error && Number(stdout.trim()) > 0)
     )
@@ -84,6 +88,10 @@ function cookieToken(req: IncomingMessage): string | undefined {
   const cookies = req.headers.cookie?.split(';').map((part) => part.trim().split('=')) ?? []
   return cookies.find(([name]) => name === COOKIE)?.[1]
 }
+
+const PAIRED_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<meta http-equiv="refresh" content="0; url=/"><title>Paired</title>
+<body style="font-family:system-ui,sans-serif;margin:4rem auto;max-width:32rem;padding:0 1rem">Paired. <a href="/">Continue</a></body>`
 
 const UNPAIRED_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Training Recording System</title>
@@ -222,13 +230,19 @@ export class CompanionServer {
         res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' }).end(UNPAIRED_PAGE)
         return
       }
-      // The cookie outlives the link, so the token leaves the address bar.
+      // The cookie outlives the link. A page (not a redirect) continues to "/",
+      // so the next request is a same-site navigation: links opened from a
+      // camera app count as cross-site, and some browsers drop the cookie on a
+      // redirect then. Lax still keeps it off cross-site sub-requests, and the
+      // WebSocket checks the Origin anyway.
       res
-        .writeHead(302, {
-          'Set-Cookie': `${COOKIE}=${this.token()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`,
-          Location: '/'
+        .writeHead(200, {
+          'Set-Cookie': `${COOKIE}=${this.token()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`,
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer'
         })
-        .end()
+        .end(PAIRED_PAGE)
       return
     }
 
