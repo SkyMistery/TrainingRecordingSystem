@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { Theme, ThemePreference, ThemeState } from '../shared/theme'
 import type {
   AppState,
+  AudioCommand,
   AudioLevels,
   AudioSourceKind,
   AudioTargetOption,
@@ -10,9 +11,12 @@ import type {
   Hotkey,
   MarkerFeedback,
   MarkerSettings,
+  NoteAudio,
+  NoteSettings,
   ObsConnectionConfig,
   SessionMetadata,
-  SessionSummary
+  SessionSummary,
+  WhisperModelId
 } from '../shared/types'
 
 /** Invokes a main-process handler and rethrows its error with a clean message. */
@@ -65,6 +69,21 @@ const api = {
   deleteMarker: (markerId: string) => invoke<void>('markers:delete', markerId),
   saveMarkerSettings: (settings: MarkerSettings) => invoke<void>('markers:saveSettings', settings),
   onMarkerFeedback: (listener: (kind: MarkerFeedback) => void) => subscribe('marker:feedback', listener),
+  startNote: () => invoke<void>('notes:start'),
+  stopNote: () => invoke<void>('notes:stop'),
+  setNoteText: (markerId: string, noteId: string, text: string | null) =>
+    invoke<void>('notes:setText', markerId, noteId, text),
+  deleteNote: (markerId: string, noteId: string) => invoke<void>('notes:delete', markerId, noteId),
+  retranscribeNote: (markerId: string, noteId: string) => invoke<void>('notes:retranscribe', markerId, noteId),
+  saveNoteSettings: (settings: NoteSettings) => invoke<void>('notes:saveSettings', settings),
+  downloadModel: (model: WhisperModelId) => invoke<void>('models:download', model),
+  cancelModelDownload: () => invoke<void>('models:cancelDownload'),
+
+  // Hidden microphone window.
+  onAudioCommand: (listener: (command: AudioCommand) => void) => subscribe('audio:command', listener),
+  sendNoteAudio: (token: string, audio: NoteAudio | null) => invoke<void>('audio:note', token, audio),
+  reportAudioError: (message: string) => invoke<void>('audio:error', message),
+
   captureHotkey: () => invoke<Hotkey | null>('hotkeys:capture'),
   cancelHotkeyCapture: () => invoke<void>('hotkeys:cancelCapture')
 }

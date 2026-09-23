@@ -17,12 +17,23 @@ import type { Hotkey, HotkeyAction, MarkerCategory, MarkerSettings } from '@shar
 import { HotkeyInput } from './HotkeyInput'
 
 /** Colours from the IVAO brand palette (atmos, ocean, semantic and product colours). */
-const PALETTE = ['#1342e4', '#3c55ac', '#7ea2d6', '#e93434', '#e5802e', '#f9cc2c', '#2ec662', '#4b7f7e', '#8b5cf6', '#8b8ca9']
+const PALETTE = [
+  '#1342e4',
+  '#3c55ac',
+  '#7ea2d6',
+  '#e93434',
+  '#e5802e',
+  '#f9cc2c',
+  '#2ec662',
+  '#4b7f7e',
+  '#8b5cf6',
+  '#8b8ca9'
+]
 
 const ACTIONS: { action: HotkeyAction; label: string; hint: string }[] = [
   { action: 'marker', label: 'Marker', hint: 'Screenshot + marker, moved back by the pre-roll.' },
   { action: 'range', label: 'Range start / end', hint: 'First press starts a range, the second ends it.' },
-  { action: 'voiceNote', label: 'Voice note (hold)', hint: 'Push-to-talk for voice notes — arrives with voice notes.' }
+  { action: 'voiceNote', label: 'Voice note (hold)', hint: 'Hold to dictate a note, release to save it.' }
 ]
 
 function ColorPicker({ value, onChange }: { value: string; onChange: (color: string) => void }): React.JSX.Element {
@@ -118,8 +129,8 @@ export function MarkersCard({ settings }: { settings: MarkerSettings }): React.J
       <CardHeader>
         <CardTitle>Markers and hotkeys</CardTitle>
         <CardDescription>
-          Hotkeys work while Aurora has focus. Use keys or mouse buttons Aurora doesn’t use: they still reach
-          Aurora too.
+          Hotkeys work while Aurora has focus. Use keys or mouse buttons Aurora doesn’t use: they still reach Aurora
+          too.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
@@ -139,8 +150,8 @@ export function MarkersCard({ settings }: { settings: MarkerSettings }): React.J
               }}
             />
             <span className="text-sm text-muted-foreground">
-              seconds — markers are placed this much before the key press, since you usually notice a moment
-              after it happens.
+              seconds — markers are placed this much before the key press, since you usually notice a moment after it
+              happens.
             </span>
           </div>
         </div>

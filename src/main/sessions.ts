@@ -13,10 +13,17 @@ export async function writeJsonAtomic(filePath: string, data: unknown): Promise<
 }
 
 function safeSegment(value: string): string {
-  return value.trim().replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
+  return value
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32)
 }
 
-export async function createSession(root: string, metadata: SessionMetadata): Promise<{ folder: string; session: SessionFile }> {
+export async function createSession(
+  root: string,
+  metadata: SessionMetadata
+): Promise<{ folder: string; session: SessionFile }> {
   const now = new Date()
   const stamp = `${metadata.date}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
   const name = [stamp, safeSegment(metadata.traineeVid), safeSegment(metadata.position)].filter(Boolean).join('_')
@@ -41,6 +48,39 @@ export async function saveSession(folder: string, session: SessionFile): Promise
   await writeJsonAtomic(join(folder, SESSION_FILE), session)
 }
 
+/** Reads a session, filling in fields added by later versions of the app. */
+export async function loadSession(folder: string): Promise<SessionFile> {
+  const session = JSON.parse(await readFile(join(folder, SESSION_FILE), 'utf8')) as SessionFile
+  session.markers = (session.markers ?? []).map((marker) => ({ ...marker, notes: marker.notes ?? [] }))
+  return session
+}
+
+/**
+ * Serialises every change to a session.json, whether it comes from the
+ * recording in progress or from a transcription finishing later. The active
+ * session is edited in memory (`live`); others are read from disk.
+ */
+export class SessionStore {
+  private readonly chains = new Map<string, Promise<unknown>>()
+
+  constructor(private readonly live: (folder: string) => SessionFile | undefined) {}
+
+  update(folder: string, change: (session: SessionFile) => void): Promise<SessionFile> {
+    const run = async (): Promise<SessionFile> => {
+      const session = this.live(folder) ?? (await loadSession(folder))
+      change(session)
+      await saveSession(folder, session)
+      return session
+    }
+    const next = (this.chains.get(folder) ?? Promise.resolve()).then(run, run)
+    this.chains.set(
+      folder,
+      next.catch(() => undefined)
+    )
+    return next
+  }
+}
+
 export async function listSessions(root: string): Promise<SessionSummary[]> {
   let entries: string[]
   try {
@@ -52,7 +92,7 @@ export async function listSessions(root: string): Promise<SessionSummary[]> {
   for (const entry of entries) {
     const folder = join(root, entry)
     try {
-      const session = JSON.parse(await readFile(join(folder, SESSION_FILE), 'utf8')) as SessionFile
+      const session = await loadSession(folder)
       sessions.push({
         id: session.id,
         folder,

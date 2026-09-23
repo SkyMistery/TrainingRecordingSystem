@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Alert, Button, CardContent, CardDescription, CardHeader, CardRoot, CardTitle } from '@ivao/atmosphere-react'
-import { CircleAlert, Flag, MoveHorizontal, Square } from 'lucide-react'
+import { CircleAlert, Flag, Mic, MoveHorizontal, Square } from 'lucide-react'
 import type { AppState, RecordingState } from '@shared/types'
 import { AudioMixer } from '../components/AudioMixer'
 import { MarkerList } from '../components/MarkerList'
@@ -48,7 +48,11 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
                 <Button variant="outline" onClick={() => setConfirming(false)}>
                   Keep recording
                 </Button>
-                <Button variant="destructive" isLoading={state.busy} onClick={() => run(() => window.api.stopSession())}>
+                <Button
+                  variant="destructive"
+                  isLoading={state.busy}
+                  onClick={() => run(() => window.api.stopSession())}
+                >
                   <Square className="size-4 fill-current" aria-hidden />
                   Stop
                 </Button>
@@ -70,11 +74,25 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
           <div className="flex flex-col gap-1.5">
             <CardTitle>Markers</CardTitle>
             <CardDescription>
-              Hotkeys: marker {hotkeys.marker?.label ?? '(not set)'} · range {hotkeys.range?.label ?? '(not set)'}.
-              Markers are placed {state.markerSettings.preRollSeconds} s before the key press.
+              Hotkeys: marker {hotkeys.marker?.label ?? '(not set)'} · range {hotkeys.range?.label ?? '(not set)'} ·
+              voice note {hotkeys.voiceNote?.label ?? '(not set)'} (hold). Markers are placed{' '}
+              {state.markerSettings.preRollSeconds} s before the key press.
             </CardDescription>
           </div>
           <div className="flex gap-2">
+            <Button
+              variant={recording.dictatingMarkerId ? 'primary' : 'outline'}
+              title="Hold to dictate a voice note"
+              onPointerDown={(event) => {
+                event.currentTarget.setPointerCapture(event.pointerId)
+                run(() => window.api.startNote())
+              }}
+              onPointerUp={() => run(() => window.api.stopNote())}
+              onPointerCancel={() => run(() => window.api.stopNote())}
+            >
+              <Mic className="size-4" aria-hidden />
+              {recording.dictatingMarkerId ? 'Release to save' : 'Hold to dictate'}
+            </Button>
             <Button variant="outline" onClick={() => run(() => window.api.addMarker())}>
               <Flag className="size-4" aria-hidden />
               Add marker
@@ -91,6 +109,10 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
             categories={state.markerSettings.categories}
             folderName={recording.folderName}
             openRangeId={recording.openRangeId}
+            dictatingMarkerId={recording.dictatingMarkerId}
+            onNoteTextChange={(markerId, noteId, text) => run(() => window.api.setNoteText(markerId, noteId, text))}
+            onNoteRetranscribe={(markerId, noteId) => run(() => window.api.retranscribeNote(markerId, noteId))}
+            onNoteDelete={(markerId, noteId) => run(() => window.api.deleteNote(markerId, noteId))}
             onCategoryChange={(markerId, categoryId) => run(() => window.api.setMarkerCategory(markerId, categoryId))}
             onDelete={(markerId) => run(() => window.api.deleteMarker(markerId))}
           />

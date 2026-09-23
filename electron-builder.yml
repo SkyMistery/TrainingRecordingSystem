@@ -21,3 +21,6 @@ publish:
   owner: SkyMistery
   repo: TrainingRecordingSystem
   releaseType: draft
+extraResources:
+  - from: resources/whisper
+    to: whisper

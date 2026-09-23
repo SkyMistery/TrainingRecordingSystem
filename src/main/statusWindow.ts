@@ -16,9 +16,7 @@ function recordedDisplay(obsDisplayName: string | undefined): Display | undefine
   const match = obsDisplayName && /@\s*(-?\d+)\s*,\s*(-?\d+)/.exec(obsDisplayName)
   if (!match) return undefined
   const [x, y] = [Number(match[1]), Number(match[2])]
-  return screen
-    .getAllDisplays()
-    .find((d) => Math.abs(d.nativeOrigin.x - x) < 2 && Math.abs(d.nativeOrigin.y - y) < 2)
+  return screen.getAllDisplays().find((d) => Math.abs(d.nativeOrigin.x - x) < 2 && Math.abs(d.nativeOrigin.y - y) < 2)
 }
 
 /** Top-right corner of a monitor other than the recorded one, so the window isn't recorded. */
@@ -35,7 +33,12 @@ function defaultPosition(obsDisplayName: string | undefined): { x: number; y: nu
 
 function isVisibleOnSomeDisplay(position: { x: number; y: number }): boolean {
   return screen.getAllDisplays().some(({ workArea: a }) => {
-    return position.x >= a.x - WIDTH / 2 && position.x < a.x + a.width - WIDTH / 2 && position.y >= a.y && position.y < a.y + a.height - 20
+    return (
+      position.x >= a.x - WIDTH / 2 &&
+      position.x < a.x + a.width - WIDTH / 2 &&
+      position.y >= a.y &&
+      position.y < a.y + a.height - 20
+    )
   })
 }
 

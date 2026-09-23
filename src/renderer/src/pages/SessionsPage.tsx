@@ -42,7 +42,8 @@ function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStart
   const set = (field: keyof SessionMetadata) => (event: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [field]: field === 'position' ? event.target.value.toUpperCase() : event.target.value }))
 
-  const valid = /^\d+$/.test(form.traineeVid.trim()) && form.position.trim() !== '' && /^\d*$/.test(form.trainerVid.trim())
+  const valid =
+    /^\d+$/.test(form.traineeVid.trim()) && form.position.trim() !== '' && /^\d*$/.test(form.trainerVid.trim())
 
   const start = async (): Promise<void> => {
     setStarting(true)
@@ -103,7 +104,9 @@ function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStart
           <Input id="session-date" type="date" value={form.date} onChange={set('date')} />
         </div>
       </div>
-      {error && <Alert variant="destructive" Icon={CircleAlert} title="Could not start recording" description={error} />}
+      {error && (
+        <Alert variant="destructive" Icon={CircleAlert} title="Could not start recording" description={error} />
+      )}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onCancel}>
           Cancel

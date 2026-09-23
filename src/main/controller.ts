@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, rm, unlink } from 'node:fs/promises'
+import { mkdir, rm, unlink, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import type {
@@ -12,23 +12,41 @@ import type {
   Marker,
   MarkerFeedback,
   MarkerSettings,
+  Note,
+  NoteSettings,
   ObsConnectionConfig,
   SessionFile,
-  SessionMetadata
+  SessionMetadata,
+  TranscriptionState,
+  WhisperModelId
 } from '../shared/types'
 import { sameHotkey } from '../shared/hotkey'
+import { AudioCapture } from './audioWindow'
 import { GlobalHotkeys } from './hotkeys'
 import { ObsRecorder } from './recorder/ObsRecorder'
 import type { Recorder } from './recorder/Recorder'
-import { adoptRecording, createSession, listSessions, saveSession } from './sessions'
+import { adoptRecording, createSession, listSessions, loadSession, SessionStore } from './sessions'
 import { decryptSecret, encryptSecret, getSettings, updateSettings } from './settings'
 import { hideStatusWindow, showStatusWindow } from './statusWindow'
+import { Transcriber } from './transcriber'
 
 interface ActiveSession {
   folder: string
   session: SessionFile
   openRangeId: string | null
 }
+
+/** A voice note being dictated (push-to-talk held). */
+interface Dictation {
+  token: string
+  markerId: string
+  recordedAtMs: number
+  /** OBS microphone sources muted for the dictation, unmuted afterwards. */
+  mutedSourceIds: string[]
+}
+
+/** Keeps the recording muted a moment longer: the voice trails off after release. */
+const UNMUTE_DELAY_MS = 300
 
 /**
  * Owns the application state. Windows (and later the Companion page) are views:
@@ -38,17 +56,33 @@ export class Controller {
   private readonly recorder: Recorder
   private readonly hotkeys = new GlobalHotkeys()
   private active: ActiveSession | null = null
+  private dictation: Dictation | null = null
   private state: AppState
-  /** session.json writes are chained so concurrent changes never interleave. */
-  private saving: Promise<void> = Promise.resolve()
+  private readonly store = new SessionStore((folder) =>
+    this.active?.folder === folder ? this.active.session : undefined
+  )
+  private readonly transcriber: Transcriber
+  private readonly audio = new AudioCapture((message) => {
+    console.error('Microphone error:', message)
+    this.feedback('error')
+  })
 
   constructor() {
     const settings = getSettings()
+    this.transcriber = new Transcriber(this.store, {
+      noteChanged: (folder) => {
+        if (this.active?.folder === folder) this.publishRecording()
+        else this.broadcast('sessions:changed', null)
+      },
+      stateChanged: () => this.patch({ transcription: this.transcriptionState() })
+    })
     this.state = {
       obs: { status: 'disconnected', error: null, version: null },
       recording: null,
       capture: settings.capture,
       markerSettings: settings.markers,
+      noteSettings: settings.notes,
+      transcription: this.transcriptionState(),
       busy: false
     }
     this.recorder = new ObsRecorder(
@@ -75,6 +109,9 @@ export class Controller {
     await this.detectDefaultEncoder()
     this.registerIpc()
     this.hotkeys.on('down', (hotkey) => this.onHotkey(hotkey))
+    this.hotkeys.on('up', (hotkey) => {
+      if (this.dictation && sameHotkey(hotkey, getSettings().markers.hotkeys.voiceNote)) this.run(() => this.stopNote())
+    })
     try {
       this.hotkeys.start()
     } catch (error) {
@@ -82,6 +119,7 @@ export class Controller {
     }
     // Connect silently at startup; the Setup page shows the outcome.
     void this.connectObs().catch(() => undefined)
+    void this.resumeTranscriptions()
   }
 
   isRecording(): boolean {
@@ -91,6 +129,8 @@ export class Controller {
   async shutdown(): Promise<void> {
     this.hotkeys.stop()
     if (this.active) await this.stopSession()
+    this.audio.destroy()
+    this.transcriber.cancelDownload()
     await this.recorder.disconnect().catch(() => undefined)
   }
 
@@ -159,6 +199,28 @@ export class Controller {
       await updateSettings({ markers })
       this.patch({ markerSettings: markers })
     })
+    handle('notes:start', () => this.startNote())
+    handle('notes:stop', () => this.stopNote())
+    handle('notes:setText', (markerId: string, noteId: string, text: string | null) =>
+      this.updateNote(markerId, noteId, (note) => {
+        note.text = text !== null && text.trim() !== (note.transcript ?? '') ? text.trim() : null
+      })
+    )
+    handle('notes:delete', (markerId: string, noteId: string) => this.deleteNote(markerId, noteId))
+    handle('notes:retranscribe', async (markerId: string, noteId: string) => {
+      await this.updateNote(markerId, noteId, (note) => {
+        note.status = 'pending'
+      })
+      this.transcriber.enqueue(this.requireActive().folder, noteId)
+    })
+    handle('notes:saveSettings', async (notes: NoteSettings) => {
+      await updateSettings({ notes })
+      this.patch({ noteSettings: notes })
+      // A different model or language may unblock notes waiting for one.
+      if (this.active) await this.transcriber.resume(this.active.folder, this.active.session)
+    })
+    handle('models:download', (model: WhisperModelId) => this.transcriber.downloadModel(model))
+    handle('models:cancelDownload', () => this.transcriber.cancelDownload())
     handle('hotkeys:capture', () => this.hotkeys.captureNext())
     handle('hotkeys:cancelCapture', () => this.hotkeys.cancelCapture())
   }
@@ -214,6 +276,10 @@ export class Controller {
       await this.persist()
       await updateSettings({ trainerVid: metadata.trainerVid })
     })
+    // Kept open for the whole session so push-to-talk starts instantly.
+    this.audio.open(getSettings().notes.micDeviceId).catch((error: unknown) => {
+      console.error('Could not open the microphone', error)
+    })
     this.publishRecording()
     if (getSettings().markers.statusWindow) showStatusWindow(capture.display.name)
   }
@@ -229,6 +295,8 @@ export class Controller {
   private async finaliseSession(outputPath: string | null, durationMs?: number): Promise<void> {
     const active = this.active
     if (!active) return
+    if (this.dictation) await this.stopNote().catch(() => undefined)
+    this.audio.close()
     hideStatusWindow()
     const recording = active.session.recording
     if (recording) {
@@ -262,39 +330,41 @@ export class Controller {
         sampledAt: Date.now(),
         folderName: basename(active.folder),
         markers: active.session.markers.map((marker) => ({ ...marker })),
-        openRangeId: active.openRangeId
+        openRangeId: active.openRangeId,
+        dictatingMarkerId: this.dictation?.markerId ?? null
       }
     })
   }
 
-  private persist(): Promise<void> {
+  private async persist(): Promise<void> {
     const active = this.active
-    if (!active) return this.saving
-    const snapshot = structuredClone(active.session)
-    this.saving = this.saving
-      .then(() => saveSession(active.folder, snapshot))
+    if (!active) return
+    await this.store
+      .update(active.folder, () => undefined)
       .catch((error: unknown) => console.error('Could not save the session', error))
-    return this.saving
   }
 
   // --- Markers -------------------------------------------------------------------
 
+  private run(action: () => Promise<void>): void {
+    action().catch((error: unknown) => {
+      console.error('Hotkey action failed', error)
+      this.feedback('error')
+    })
+  }
+
   private onHotkey(hotkey: Hotkey): void {
     if (!this.active) return
-    const run = (action: () => Promise<void>): void => {
-      action().catch((error: unknown) => {
-        console.error('Hotkey action failed', error)
-        this.feedback('error')
-      })
-    }
     const { hotkeys, categories } = getSettings().markers
     if (sameHotkey(hotkey, hotkeys.marker)) {
-      run(() => this.addPointMarker())
+      this.run(() => this.addPointMarker())
     } else if (sameHotkey(hotkey, hotkeys.range)) {
-      run(() => this.toggleRange())
+      this.run(() => this.toggleRange())
+    } else if (sameHotkey(hotkey, hotkeys.voiceNote)) {
+      this.run(() => this.startNote())
     } else {
       const category = categories.find((item) => sameHotkey(hotkey, item.hotkey))
-      if (category) run(() => this.setCategory(null, category.id))
+      if (category) this.run(() => this.setCategory(null, category.id))
     }
   }
 
@@ -310,7 +380,8 @@ export class Controller {
       endMs: null,
       categoryId: null,
       screenshot: null,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      notes: []
     }
   }
 
@@ -381,7 +452,124 @@ export class Controller {
     if (active.openRangeId === markerId) active.openRangeId = null
     await this.persist()
     this.publishRecording()
-    if (marker.screenshot) await unlink(join(active.folder, marker.screenshot)).catch(() => undefined)
+    const files = [marker.screenshot, ...marker.notes.map((note) => note.audio)].filter(
+      (file): file is string => !!file
+    )
+    for (const file of files) await unlink(join(active.folder, file)).catch(() => undefined)
+  }
+
+  // --- Voice notes -----------------------------------------------------------------
+
+  /**
+   * Push-to-talk pressed: the note goes to the open range, or to the latest
+   * marker if it is recent enough; otherwise a new marker is created for it.
+   */
+  private async startNote(): Promise<void> {
+    const active = this.requireActive()
+    if (this.dictation) return
+    const now = Math.round(this.recorder.currentTimeMs())
+    const windowMs = getSettings().notes.attachWindowSeconds * 1000
+    const latest = active.session.markers.at(-1)
+    let marker = active.session.markers.find((item) => item.id === active.openRangeId)
+    if (!marker && latest && now - latest.pressedAtMs <= windowMs) marker = latest
+
+    const token = randomUUID()
+    this.dictation = { token, markerId: marker?.id ?? '', recordedAtMs: now, mutedSourceIds: [] }
+    // Start capturing before anything slower (screenshot, OBS calls).
+    await this.audio.start(token)
+
+    if (!marker) {
+      marker = this.newMarker(active, 'point')
+      this.dictation.markerId = marker.id
+      void this.commitMarker(active, marker, 'noteStart')
+    } else {
+      this.publishRecording()
+      this.feedback('noteStart')
+    }
+
+    // Keep the trainer's dictation out of the recording.
+    const toMute = this.state.capture.audioSources.filter((source) => source.muteDuringNotes && !source.muted)
+    for (const source of toMute) {
+      await this.recorder.setMuted(source.id, true).catch(() => undefined)
+      this.dictation?.mutedSourceIds.push(source.id)
+    }
+  }
+
+  private async stopNote(): Promise<void> {
+    const dictation = this.dictation
+    const active = this.active
+    if (!dictation || !active) return
+    this.dictation = null
+    this.publishRecording()
+    this.feedback('noteEnd')
+
+    setTimeout(() => {
+      for (const id of dictation.mutedSourceIds) {
+        // Only if the trainer didn't mute it on purpose meanwhile.
+        const source = this.state.capture.audioSources.find((item) => item.id === id)
+        if (source && !source.muted) void this.recorder.setMuted(id, false).catch(() => undefined)
+      }
+    }, UNMUTE_DELAY_MS)
+
+    const audio = await this.audio.stop(dictation.token)
+    if (!audio) return
+    const noteNumber = active.session.markers.reduce((sum, marker) => sum + marker.notes.length, 0) + 1
+    const relative = `notes/n-${String(noteNumber).padStart(4, '0')}.wav`
+    await mkdir(join(active.folder, 'notes'), { recursive: true })
+    await writeFile(join(active.folder, relative), Buffer.from(audio.wav))
+
+    const note: Note = {
+      id: randomUUID().slice(0, 8),
+      audio: relative,
+      durationMs: audio.durationMs,
+      recordedAtMs: dictation.recordedAtMs,
+      transcript: null,
+      status: 'pending',
+      text: null
+    }
+    await this.store.update(active.folder, (session) => {
+      session.markers.find((marker) => marker.id === dictation.markerId)?.notes.push(note)
+    })
+    if (this.active === active) this.publishRecording()
+    this.transcriber.enqueue(active.folder, note.id)
+  }
+
+  private async updateNote(markerId: string, noteId: string, change: (note: Note) => void): Promise<void> {
+    const active = this.requireActive()
+    await this.store.update(active.folder, (session) => {
+      const note = session.markers.find((marker) => marker.id === markerId)?.notes.find((item) => item.id === noteId)
+      if (note) change(note)
+    })
+    this.publishRecording()
+  }
+
+  private async deleteNote(markerId: string, noteId: string): Promise<void> {
+    const active = this.requireActive()
+    const marker = active.session.markers.find((item) => item.id === markerId)
+    const note = marker?.notes.find((item) => item.id === noteId)
+    if (!marker || !note) return
+    marker.notes = marker.notes.filter((item) => item.id !== noteId)
+    await this.persist()
+    this.publishRecording()
+    await unlink(join(active.folder, note.audio)).catch(() => undefined)
+  }
+
+  /** Transcribes notes left over from a previous run (app closed mid-queue). */
+  private async resumeTranscriptions(): Promise<void> {
+    for (const summary of await listSessions(getSettings().sessionsDir)) {
+      const session = await loadSession(summary.folder).catch(() => null)
+      if (session) await this.transcriber.resume(summary.folder, session)
+    }
+  }
+
+  private transcriptionState(): TranscriptionState {
+    return {
+      installedModels: this.transcriber.installedModels(),
+      download: this.transcriber.currentDownload(),
+      downloadError: this.transcriber.downloadError,
+      queued: this.transcriber.queued(),
+      available: this.transcriber.available()
+    }
   }
 
   private requireActive(): ActiveSession {

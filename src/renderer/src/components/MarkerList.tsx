@@ -1,8 +1,9 @@
 import { Button } from '@ivao/atmosphere-react'
-import { Flag, MoveHorizontal, Trash2 } from 'lucide-react'
+import { Flag, Mic, MoveHorizontal, Trash2 } from 'lucide-react'
 import { mediaUrl } from '@shared/media'
 import type { Marker, MarkerCategory } from '@shared/types'
 import { formatDuration } from '../format'
+import { NoteItem } from './NoteItem'
 
 const UNCATEGORISED = '#8b8ca9'
 
@@ -27,11 +28,15 @@ interface MarkerListProps {
   categories: MarkerCategory[]
   folderName: string
   openRangeId: string | null
+  dictatingMarkerId: string | null
   onCategoryChange: (markerId: string, categoryId: string | null) => void
   onDelete: (markerId: string) => void
+  onNoteTextChange: (markerId: string, noteId: string, text: string | null) => void
+  onNoteRetranscribe: (markerId: string, noteId: string) => void
+  onNoteDelete: (markerId: string, noteId: string) => void
 }
 
-/** Newest first; each marker shows its screenshot, time, kind and category. */
+/** Newest first; each marker shows its screenshot, time, kind, category and voice notes. */
 export function MarkerList(props: MarkerListProps): React.JSX.Element {
   if (props.markers.length === 0) {
     return <p className="text-sm text-muted-foreground">No markers yet.</p>
@@ -44,65 +49,95 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
         return (
           <li
             key={marker.id}
-            className="flex items-center gap-4 rounded-md border border-border bg-background p-2 pr-3"
+            className="flex flex-col gap-2 rounded-md border border-border bg-background p-2 pr-3"
             style={{ borderLeft: `4px solid ${color}` }}
           >
-            <div className="aspect-video w-36 shrink-0 overflow-hidden rounded-sm bg-fuselage-150 dark:bg-fuselage-800">
-              {marker.screenshot && (
-                <img
-                  src={mediaUrl(props.folderName, marker.screenshot)}
-                  alt={`Screenshot of marker ${marker.number}`}
-                  className="size-full object-cover"
-                  loading="lazy"
-                />
-              )}
-            </div>
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <div className="flex items-center gap-2 text-sm">
-                {marker.kind === 'range' ? (
-                  <MoveHorizontal className="size-4 text-muted-foreground" aria-label="Range" />
-                ) : (
-                  <Flag className="size-4 text-muted-foreground" aria-label="Marker" />
-                )}
-                <span className="font-semibold">#{marker.number}</span>
-                <span className="font-mono tabular-nums">{markerTimeLabel(marker, props.openRangeId)}</span>
-                {open && (
-                  <span className="rounded-sm bg-semantic-red-500 px-1.5 py-0.5 text-xs font-semibold text-white">
-                    Open range
-                  </span>
+            <div className="flex items-center gap-4">
+              <div className="aspect-video w-36 shrink-0 overflow-hidden rounded-sm bg-fuselage-150 dark:bg-fuselage-800">
+                {marker.screenshot && (
+                  <img
+                    src={mediaUrl(props.folderName, marker.screenshot)}
+                    alt={`Screenshot of marker ${marker.number}`}
+                    className="size-full object-cover"
+                    loading="lazy"
+                  />
                 )}
               </div>
-              <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label={`Category of marker ${marker.number}`}>
-                {props.categories.map((category) => {
-                  const selected = marker.categoryId === category.id
-                  return (
-                    <button
-                      key={category.id}
-                      role="radio"
-                      aria-checked={selected}
-                      onClick={() => props.onCategoryChange(marker.id, selected ? null : category.id)}
-                      className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition-colors ${
-                        selected
-                          ? 'border-transparent font-semibold'
-                          : 'border-border text-muted-foreground hover:text-foreground'
-                      }`}
-                      style={selected ? { backgroundColor: category.color, color: textOn(category.color) } : undefined}
-                    >
-                      {!selected && <span className="size-2 rounded-full" style={{ backgroundColor: category.color }} />}
-                      {category.name}
-                    </button>
-                  )
-                })}
+              <div className="flex min-w-0 flex-1 flex-col gap-2">
+                <div className="flex items-center gap-2 text-sm">
+                  {marker.kind === 'range' ? (
+                    <MoveHorizontal className="size-4 text-muted-foreground" aria-label="Range" />
+                  ) : (
+                    <Flag className="size-4 text-muted-foreground" aria-label="Marker" />
+                  )}
+                  <span className="font-semibold">#{marker.number}</span>
+                  <span className="font-mono tabular-nums">{markerTimeLabel(marker, props.openRangeId)}</span>
+                  {open && (
+                    <span className="rounded-sm bg-semantic-red-500 px-1.5 py-0.5 text-xs font-semibold text-white">
+                      Open range
+                    </span>
+                  )}
+                  {marker.id === props.dictatingMarkerId && (
+                    <span className="flex items-center gap-1 rounded-sm bg-atmos-700 px-1.5 py-0.5 text-xs font-semibold text-white dark:bg-atmos-500">
+                      <Mic className="size-3 animate-pulse" aria-hidden />
+                      Dictating
+                    </span>
+                  )}
+                </div>
+                <div
+                  className="flex flex-wrap gap-1.5"
+                  role="radiogroup"
+                  aria-label={`Category of marker ${marker.number}`}
+                >
+                  {props.categories.map((category) => {
+                    const selected = marker.categoryId === category.id
+                    return (
+                      <button
+                        key={category.id}
+                        role="radio"
+                        aria-checked={selected}
+                        onClick={() => props.onCategoryChange(marker.id, selected ? null : category.id)}
+                        className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition-colors ${
+                          selected
+                            ? 'border-transparent font-semibold'
+                            : 'border-border text-muted-foreground hover:text-foreground'
+                        }`}
+                        style={
+                          selected ? { backgroundColor: category.color, color: textOn(category.color) } : undefined
+                        }
+                      >
+                        {!selected && (
+                          <span className="size-2 rounded-full" style={{ backgroundColor: category.color }} />
+                        )}
+                        {category.name}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Delete marker ${marker.number}`}
+                onClick={() => props.onDelete(marker.id)}
+              >
+                <Trash2 className="size-4" aria-hidden />
+              </Button>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={`Delete marker ${marker.number}`}
-              onClick={() => props.onDelete(marker.id)}
-            >
-              <Trash2 className="size-4" aria-hidden />
-            </Button>
+            {marker.notes.length > 0 && (
+              <div className="flex flex-col gap-1.5 pl-40">
+                {marker.notes.map((note) => (
+                  <NoteItem
+                    key={note.id}
+                    note={note}
+                    folderName={props.folderName}
+                    onTextChange={(text) => props.onNoteTextChange(marker.id, note.id, text)}
+                    onRetranscribe={() => props.onNoteRetranscribe(marker.id, note.id)}
+                    onDelete={() => props.onNoteDelete(marker.id, note.id)}
+                  />
+                ))}
+              </div>
+            )}
           </li>
         )
       })}

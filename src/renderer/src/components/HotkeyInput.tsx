@@ -57,9 +57,7 @@ export function HotkeyInput({ value, onChange, conflict, label }: HotkeyInputPro
         </Button>
       </div>
       {capturing && <span className="text-xs text-muted-foreground">Esc cancels.</span>}
-      {conflict && !capturing && (
-        <span className="text-xs text-semantic-red-600">Also used for “{conflict}”.</span>
-      )}
+      {conflict && !capturing && <span className="text-xs text-semantic-red-600">Also used for “{conflict}”.</span>}
     </div>
   )
 }

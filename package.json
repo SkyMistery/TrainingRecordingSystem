@@ -9,12 +9,15 @@
   "homepage": "https://github.com/SkyMistery/TrainingRecordingSystem",
   "private": true,
   "scripts": {
+    "fetch:whisper": "node scripts/fetch-whisper.mjs",
+    "predev": "node scripts/fetch-whisper.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "dist": "electron-vite build && electron-builder --win --publish never",
-    "release": "electron-vite build && electron-builder --win --publish always"
+    "dist": "node scripts/fetch-whisper.mjs && electron-vite build && electron-builder --win --publish never",
+    "release": "node scripts/fetch-whisper.mjs && electron-vite build && electron-builder --win --publish always",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.mjs\""
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
@@ -35,6 +38,7 @@
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "lucide-react": "^1.47.0",
+    "prettier": "^3.9.9",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3",

@@ -10,7 +10,9 @@ const FLASH_LABEL: Record<MarkerFeedback, string> = {
   rangeStart: 'Range started',
   rangeEnd: 'Range ended',
   category: 'Category set',
-  error: 'Not recording'
+  noteStart: 'Recording voice note…',
+  noteEnd: 'Voice note saved',
+  error: 'Something went wrong'
 }
 
 /**
@@ -56,7 +58,12 @@ export function StatusView(): React.JSX.Element {
         </span>
       </div>
       <div className="flex h-5 items-center gap-2 truncate text-sm">
-        {flash ? (
+        {recording.dictatingMarkerId ? (
+          <span className="flex items-center gap-2 font-semibold text-semantic-red-600">
+            <span className="size-2.5 animate-pulse rounded-full bg-semantic-red-500" aria-hidden />
+            Recording voice note — release to save
+          </span>
+        ) : flash ? (
           <span className="font-semibold">{FLASH_LABEL[flash]}</span>
         ) : recording.openRangeId ? (
           <span className="font-semibold text-semantic-red-600">Range open — press again to end it</span>

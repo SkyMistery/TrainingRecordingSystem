@@ -3,7 +3,7 @@ import { rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import type { ThemePreference } from '../shared/theme'
-import type { CaptureConfig, Hotkey, MarkerSettings } from '../shared/types'
+import type { CaptureConfig, Hotkey, MarkerSettings, NoteSettings } from '../shared/types'
 
 export interface Settings {
   theme: ThemePreference
@@ -17,6 +17,7 @@ export interface Settings {
   sessionsDir: string
   trainerVid: string
   markers: MarkerSettings
+  notes: NoteSettings
   /** Trainer's own OBS profile and scene collection, to restore on exit. */
   obsPreviousWorkspace: { profile: string; collection: string } | null
   /** Last position of the status window, in screen coordinates. */
@@ -61,6 +62,14 @@ const defaults = (): Settings => ({
   sessionsDir: join(app.getPath('documents'), 'IVAO TRS', 'Sessions'),
   trainerVid: '',
   markers: defaultMarkerSettings(),
+  notes: {
+    micDeviceId: 'default',
+    micLabel: 'Default microphone',
+    model: 'small',
+    language: 'auto',
+    transcribe: true,
+    attachWindowSeconds: 60
+  },
   obsPreviousWorkspace: null,
   statusWindowPosition: null
 })
@@ -79,6 +88,7 @@ export function getSettings(): Settings {
         ...stored,
         obs: { ...base.obs, ...stored.obs },
         capture: { ...base.capture, ...stored.capture },
+        notes: { ...base.notes, ...stored.notes },
         markers: {
           ...base.markers,
           ...stored.markers,

@@ -24,6 +24,7 @@ import type {
 } from '@shared/types'
 import { AudioMixer } from '../components/AudioMixer'
 import { MarkersCard } from '../components/MarkersCard'
+import { VoiceNotesCard } from '../components/VoiceNotesCard'
 import { useAudioLevels } from '../hooks'
 
 function useAction(): [string | null, <T>(fn: () => Promise<T>) => Promise<T | undefined>] {
@@ -80,9 +81,9 @@ function ObsConnectionCard({ state }: { state: AppState }): React.JSX.Element {
       <CardHeader>
         <CardTitle>OBS Studio</CardTitle>
         <CardDescription>
-          OBS 30.2 or later records the session. In OBS open Tools → WebSocket Server Settings, tick “Enable
-          WebSocket server” and copy the password here. The app uses its own OBS profile and scenes, and gives
-          yours back when it closes.
+          OBS 30.2 or later records the session. In OBS open Tools → WebSocket Server Settings, tick “Enable WebSocket
+          server” and copy the password here. The app uses its own OBS profile and scenes, and gives yours back when it
+          closes.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -117,9 +118,7 @@ function ObsConnectionCard({ state }: { state: AppState }): React.JSX.Element {
             {obs.status === 'connected' ? 'Reconnect' : 'Connect'}
           </Button>
         </form>
-        {obs.status === 'connected' && (
-          <p className="text-sm text-muted-foreground">Connected to OBS {obs.version}.</p>
-        )}
+        {obs.status === 'connected' && <p className="text-sm text-muted-foreground">Connected to OBS {obs.version}.</p>}
         <ErrorAlert message={error ?? (obs.status === 'error' ? obs.error : null)} />
       </CardContent>
     </CardRoot>
@@ -174,7 +173,10 @@ function DisplayCard({
   }, [connected, capture.display])
 
   const scaleOptions: { value: OutputScale; label: string }[] = [
-    { value: 'native', label: capture.display ? `Native (${capture.display.width}×${capture.display.height})` : 'Native' },
+    {
+      value: 'native',
+      label: capture.display ? `Native (${capture.display.width}×${capture.display.height})` : 'Native'
+    },
     { value: '1080p', label: 'Downscale to 1080p (smaller files)' }
   ]
 
@@ -201,7 +203,13 @@ function DisplayCard({
               items={displays.map((display) => ({ value: display.id, label: display.name }))}
             />
           </div>
-          <Button variant="outline" size="icon" aria-label="Refresh monitors" disabled={!connected} onClick={loadDisplays}>
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label="Refresh monitors"
+            disabled={!connected}
+            onClick={loadDisplays}
+          >
             <RefreshCw className="size-4" aria-hidden />
           </Button>
         </div>
@@ -310,8 +318,8 @@ function AudioCard({
       <CardHeader>
         <CardTitle>Audio</CardTitle>
         <CardDescription>
-          Each source has its own mute and volume, like in OBS. A typical setup: Aurora, your voice client and
-          your microphone.
+          Each source has its own mute and volume, like in OBS. A typical setup: Aurora, your voice client and your
+          microphone.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
@@ -329,9 +337,7 @@ function AudioCard({
           onNotesMuteChange={(id, value) =>
             save({ audioSources: sources.map((s) => (s.id === id ? { ...s, muteDuringNotes: value } : s)) })
           }
-          onRemove={
-            state.recording ? undefined : (id) => save({ audioSources: sources.filter((s) => s.id !== id) })
-          }
+          onRemove={state.recording ? undefined : (id) => save({ audioSources: sources.filter((s) => s.id !== id) })}
         />
 
         {!state.recording && (
@@ -361,13 +367,7 @@ function AudioCard({
                 items={targets}
               />
             </div>
-            <Button
-              variant="outline"
-              size="icon"
-              aria-label="Refresh list"
-              disabled={!connected}
-              onClick={loadTargets}
-            >
+            <Button variant="outline" size="icon" aria-label="Refresh list" disabled={!connected} onClick={loadTargets}>
               <RefreshCw className="size-4" aria-hidden />
             </Button>
             <Button disabled={!connected || !target} onClick={add}>
@@ -402,6 +402,7 @@ export function SetupPage({ state }: { state: AppState }): React.JSX.Element {
       <DisplayCard state={state} save={save} />
       <AudioCard state={state} save={save} />
       <MarkersCard settings={state.markerSettings} />
+      <VoiceNotesCard state={state} />
       <ErrorAlert message={error} />
     </div>
   )

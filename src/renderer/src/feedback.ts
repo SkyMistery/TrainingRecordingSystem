@@ -12,6 +12,8 @@ const TONES: Record<MarkerFeedback, [number, number, number, number][]> = {
     [1200, 1200, 0.05, 0],
     [1200, 1200, 0.05, 0.08]
   ],
+  noteStart: [[520, 780, 0.1, 0]],
+  noteEnd: [[780, 520, 0.1, 0]],
   error: [[220, 220, 0.2, 0]]
 }
 

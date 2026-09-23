@@ -99,6 +99,21 @@ export interface MarkerSettings {
   statusWindow: boolean
 }
 
+export type TranscriptionStatus = 'pending' | 'transcribing' | 'done' | 'failed' | 'no-model'
+
+export interface Note {
+  id: string
+  /** WAV path relative to the session folder. */
+  audio: string
+  durationMs: number
+  /** Recording time when dictation started. */
+  recordedAtMs: number
+  transcript: string | null
+  status: TranscriptionStatus
+  /** The trainer's edited text; null means "use the transcript". */
+  text: string | null
+}
+
 export interface Marker {
   id: string
   /** 1-based, in creation order. */
@@ -114,6 +129,37 @@ export interface Marker {
   /** Screenshot path relative to the session folder. */
   screenshot: string | null
   createdAt: string
+  notes: Note[]
+}
+
+export type WhisperModelId = 'base' | 'small' | 'large-v3-turbo-q5_0'
+
+export interface NoteSettings {
+  /** Browser media device id of the microphone used for voice notes. */
+  micDeviceId: string
+  micLabel: string
+  model: WhisperModelId
+  /** Whisper language code, or "auto" to detect it for each note. */
+  language: string
+  transcribe: boolean
+  /** A note joins the latest marker if it was placed less than this long ago; otherwise it creates one. */
+  attachWindowSeconds: number
+}
+
+export interface ModelDownload {
+  model: WhisperModelId
+  receivedBytes: number
+  totalBytes: number
+}
+
+export interface TranscriptionState {
+  installedModels: WhisperModelId[]
+  download: ModelDownload | null
+  downloadError: string | null
+  /** Notes waiting for or being transcribed. */
+  queued: number
+  /** False when the whisper program is missing from the installation. */
+  available: boolean
 }
 
 export interface SessionFile {
@@ -144,6 +190,8 @@ export interface RecordingState {
   folderName: string
   markers: Marker[]
   openRangeId: string | null
+  /** Marker receiving the voice note being dictated, if any. */
+  dictatingMarkerId: string | null
 }
 
 export interface AppState {
@@ -151,11 +199,25 @@ export interface AppState {
   recording: RecordingState | null
   capture: CaptureConfig
   markerSettings: MarkerSettings
+  noteSettings: NoteSettings
+  transcription: TranscriptionState
   busy: boolean
 }
 
 /** Sent to windows when a hotkey or button changes markers, for audio/visual feedback. */
-export type MarkerFeedback = 'marker' | 'rangeStart' | 'rangeEnd' | 'category' | 'error'
+export type MarkerFeedback = 'marker' | 'rangeStart' | 'rangeEnd' | 'category' | 'noteStart' | 'noteEnd' | 'error'
 
 /** Peak level per audio source id, in dBFS (-60 … 0). */
 export type AudioLevels = Record<string, number>
+
+/** Commands from the main process to the hidden microphone window. */
+export type AudioCommand =
+  | { type: 'open'; deviceId: string }
+  | { type: 'start'; token: string }
+  | { type: 'stop'; token: string }
+  | { type: 'close' }
+
+export interface NoteAudio {
+  wav: ArrayBuffer
+  durationMs: number
+}
