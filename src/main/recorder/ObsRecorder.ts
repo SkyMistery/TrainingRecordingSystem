@@ -158,9 +158,10 @@ export class ObsRecorder implements Recorder {
         inputName: probe,
         propertyName: TARGET_PROPERTY[kind]
       })
-      return propertyItems
+      const options = propertyItems
         .filter((item) => item.itemValue && item.itemEnabled !== false)
         .map((item) => ({ value: String(item.itemValue), label: String(item.itemName) }))
+      return kind === 'application' ? groupByExecutable(options) : options
     } finally {
       await this.removeInputIfExists(probe)
     }
@@ -439,6 +440,25 @@ export class ObsRecorder implements Recorder {
       // Not found.
     }
   }
+}
+
+/** Processes whose windows are never an audio source worth recording. */
+const IGNORED_EXECUTABLES = new Set(['explorer.exe', 'searchhost.exe', 'shellexperiencehost.exe', 'textinputhost.exe'])
+
+/**
+ * OBS lists one entry per window ("title:class:exe"); Aurora alone has one per
+ * inset. Audio is matched by executable, so keep one entry per program.
+ */
+function groupByExecutable(options: AudioTargetOption[]): AudioTargetOption[] {
+  const byExe = new Map<string, AudioTargetOption>()
+  for (const option of options) {
+    const exe = option.value.split(':').pop() ?? ''
+    const key = exe.toLowerCase()
+    if (!exe || IGNORED_EXECUTABLES.has(key) || byExe.has(key)) continue
+    if (option.label.includes('Training Recording System')) continue
+    byExe.set(key, { value: option.value, label: `${exe.replace(/\.exe$/i, '')} (${exe})` })
+  }
+  return [...byExe.values()].sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
 }
 
 function even(value: number): number {
