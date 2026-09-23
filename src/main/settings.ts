@@ -17,6 +17,8 @@ export interface Settings {
   sessionsDir: string
   trainerVid: string
   markers: MarkerSettings
+  /** Trainer's own OBS profile and scene collection, to restore on exit. */
+  obsPreviousWorkspace: { profile: string; collection: string } | null
   /** Last position of the status window, in screen coordinates. */
   statusWindowPosition: { x: number; y: number } | null
 }
@@ -59,6 +61,7 @@ const defaults = (): Settings => ({
   sessionsDir: join(app.getPath('documents'), 'IVAO TRS', 'Sessions'),
   trainerVid: '',
   markers: defaultMarkerSettings(),
+  obsPreviousWorkspace: null,
   statusWindowPosition: null
 })
 

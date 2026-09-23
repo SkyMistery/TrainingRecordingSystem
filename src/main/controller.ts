@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, unlink } from 'node:fs/promises'
+import { mkdir, rm, unlink } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import type {
@@ -63,6 +63,10 @@ export class Controller {
         },
         onLevels: (levels) => this.broadcast('audio:levels', levels),
         onRecordingStopped: (outputPath) => void this.finaliseSession(outputPath)
+      },
+      {
+        get: () => getSettings().obsPreviousWorkspace,
+        set: (obsPreviousWorkspace) => void updateSettings({ obsPreviousWorkspace })
       }
     )
   }
@@ -193,7 +197,13 @@ export class Controller {
     await this.withBusy(async () => {
       await recorder.configure(capture)
       const { folder, session } = await createSession(getSettings().sessionsDir, metadata)
-      await recorder.start(folder)
+      try {
+        await recorder.start(folder)
+      } catch (error) {
+        // Don't leave an empty session behind when OBS refuses to record.
+        await rm(folder, { recursive: true, force: true }).catch(() => undefined)
+        throw error
+      }
       session.recording = {
         file: null,
         startedAt: new Date().toISOString(),

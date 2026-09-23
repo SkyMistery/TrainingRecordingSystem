@@ -40,12 +40,24 @@ export interface ObsConnectionParams {
   password?: string
 }
 
+export interface ObsWorkspace {
+  profile: string
+  collection: string
+}
+
+/**
+ * Keeps the trainer's own OBS profile and scene collection on disk, so they are
+ * restored even if the app crashed while OBS was on the app's workspace.
+ */
+export interface WorkspaceStore {
+  get(): ObsWorkspace | null
+  set(workspace: ObsWorkspace | null): void
+}
+
 export class ObsRecorder implements Recorder {
   private readonly obs = new OBSWebSocket()
   private connected = false
   private recording = false
-  /** Trainer's profile and scene collection, restored on disconnect. */
-  private previous: { profile: string; collection: string } | null = null
   private clock = { durationMs: 0, sampledAt: 0 }
   private clockTimer: NodeJS.Timeout | null = null
   private startWaiter: ((started: boolean) => void) | null = null
@@ -53,7 +65,8 @@ export class ObsRecorder implements Recorder {
 
   constructor(
     private readonly connection: () => ObsConnectionParams,
-    private readonly events: RecorderEvents
+    private readonly events: RecorderEvents,
+    private readonly workspace: WorkspaceStore
   ) {
     this.obs.on('ConnectionClosed', (error) => {
       const wasConnected = this.connected
@@ -287,9 +300,9 @@ export class ObsRecorder implements Recorder {
     if (needsSwitch && (await this.obsOutputActive())) {
       throw new Error('OBS is recording or streaming right now. Stop it in OBS, then connect again.')
     }
-    this.previous = needsSwitch
-      ? { profile: profiles.currentProfileName, collection: collections.currentSceneCollectionName }
-      : null
+    if (needsSwitch) {
+      this.workspace.set({ profile: profiles.currentProfileName, collection: collections.currentSceneCollectionName })
+    }
 
     if (profiles.currentProfileName !== PROFILE) {
       if (profiles.profiles.includes(PROFILE)) {
@@ -334,12 +347,19 @@ export class ObsRecorder implements Recorder {
   }
 
   private async restoreWorkspace(): Promise<void> {
-    if (!this.previous || this.recording) return
+    const previous = this.workspace.get()
+    if (!previous || this.recording) return
     if (await this.obsOutputActive()) return
-    const { profile, collection } = this.previous
-    await this.obs.call('SetCurrentSceneCollection', { sceneCollectionName: collection })
-    await this.obs.call('SetCurrentProfile', { profileName: profile })
-    this.previous = null
+    // The trainer may have renamed or deleted them in the meantime.
+    const { sceneCollections } = await this.obs.call('GetSceneCollectionList')
+    const { profiles } = await this.obs.call('GetProfileList')
+    if (sceneCollections.includes(previous.collection)) {
+      await this.obs.call('SetCurrentSceneCollection', { sceneCollectionName: previous.collection })
+    }
+    if (profiles.includes(previous.profile)) {
+      await this.obs.call('SetCurrentProfile', { profileName: previous.profile })
+    }
+    this.workspace.set(null)
   }
 
   /** Simple output, quality-based recording, hybrid MP4 (crash-safe, playable in the app). */
