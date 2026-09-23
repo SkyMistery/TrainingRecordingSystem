@@ -96,6 +96,7 @@ export async function listSessions(root: string): Promise<SessionSummary[]> {
       sessions.push({
         id: session.id,
         folder,
+        folderName: entry,
         metadata: session.metadata,
         durationMs: session.recording?.durationMs ?? null,
         hasRecording: Boolean(session.recording?.file),

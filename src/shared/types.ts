@@ -174,6 +174,8 @@ export interface SessionFile {
 export interface SessionSummary {
   id: string
   folder: string
+  /** Folder name inside the sessions folder: how commands and media URLs refer to a session. */
+  folderName: string
   metadata: SessionMetadata
   durationMs: number | null
   hasRecording: boolean

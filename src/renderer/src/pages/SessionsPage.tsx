@@ -123,6 +123,11 @@ function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStart
 export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSetup: () => void }): React.JSX.Element {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
+  const openReview = (folderName: string): void => {
+    setReviewError(null)
+    window.api.openReview(folderName).catch((e: unknown) => setReviewError(e instanceof Error ? e.message : String(e)))
+  }
 
   useEffect(() => {
     const load = (): void => void window.api.listSessions().then(setSessions)
@@ -189,7 +194,15 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
             Open sessions folder
           </Button>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex flex-col gap-4">
+          {reviewError && (
+            <Alert
+              variant="destructive"
+              Icon={CircleAlert}
+              title="Could not open the session"
+              description={reviewError}
+            />
+          )}
           {sessions.length === 0 ? (
             <p className="text-sm text-muted-foreground">No sessions yet.</p>
           ) : (
@@ -225,7 +238,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
                         size="sm"
                         className="mr-1"
                         disabled={state.recording !== null}
-                        onClick={() => void window.api.openReview(session.folder.split(/[\/]/).pop()!)}
+                        onClick={() => openReview(session.folderName)}
                       >
                         <Play className="size-4" aria-hidden />
                         Review
