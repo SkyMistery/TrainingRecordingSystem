@@ -8,8 +8,62 @@ import { NoteItem } from './NoteItem'
 
 const UNCATEGORISED = '#8b8ca9'
 
-export function categoryColor(categories: MarkerCategory[], categoryId: string | null): string {
-  return categories.find((category) => category.id === categoryId)?.color ?? UNCATEGORISED
+/** Colours of a marker's categories, in the order of the category list; grey when it has none. */
+export function markerColors(categories: MarkerCategory[], categoryIds: string[]): string[] {
+  const colors = categories.filter((category) => categoryIds.includes(category.id)).map((category) => category.color)
+  return colors.length > 0 ? colors : [UNCATEGORISED]
+}
+
+/** CSS background: one colour, or equal stripes when a marker has several categories. */
+export function paint(colors: string[], direction = '90deg'): string {
+  if (colors.length === 1) return colors[0]
+  const step = 100 / colors.length
+  const stops = colors.map((color, i) => `${color} ${i * step}% ${(i + 1) * step}%`)
+  return `linear-gradient(${direction}, ${stops.join(', ')})`
+}
+
+/** Coloured bar on the left edge of a marker card; the card needs `relative overflow-hidden`. */
+export function CategoryStripe({ colors, width }: { colors: string[]; width: number }): React.JSX.Element {
+  return (
+    <span aria-hidden className="absolute inset-y-0 left-0" style={{ width, background: paint(colors, '180deg') }} />
+  )
+}
+
+/** Category chips: each one toggles, so a marker can have several categories. */
+export function CategoryChips({
+  categories,
+  selectedIds,
+  label,
+  onToggle,
+  size = 'sm'
+}: {
+  categories: MarkerCategory[]
+  selectedIds: string[]
+  label: string
+  onToggle: (categoryId: string) => void
+  size?: 'sm' | 'md'
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-wrap gap-1.5" role="group" aria-label={label}>
+      {categories.map((category) => {
+        const selected = selectedIds.includes(category.id)
+        return (
+          <button
+            key={category.id}
+            aria-pressed={selected}
+            onClick={() => onToggle(category.id)}
+            className={`flex items-center gap-1.5 whitespace-nowrap rounded-full border text-xs transition-colors ${
+              size === 'md' ? 'px-2.5 py-1' : 'px-2 py-0.5'
+            } ${selected ? 'border-transparent font-semibold' : 'border-border text-muted-foreground hover:text-foreground'}`}
+            style={selected ? { backgroundColor: category.color, color: textOn(category.color) } : undefined}
+          >
+            {!selected && <span className="size-2 rounded-full" style={{ backgroundColor: category.color }} />}
+            {category.name}
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 /** Dark text on light category colours (e.g. yellow), white otherwise. */
@@ -41,14 +95,14 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
   return (
     <ul className="flex flex-col gap-3">
       {[...props.markers].reverse().map((marker) => {
-        const color = categoryColor(props.categories, marker.categoryId)
+        const colors = markerColors(props.categories, marker.categoryIds)
         const open = marker.id === props.openRangeId
         return (
           <li
             key={marker.id}
-            className="flex flex-col gap-2 rounded-md border border-border bg-background p-2 pr-3"
-            style={{ borderLeft: `4px solid ${color}` }}
+            className="relative flex flex-col gap-2 overflow-hidden rounded-md border border-border bg-background p-2 pl-3 pr-3"
           >
+            <CategoryStripe colors={colors} width={4} />
             {/* Screenshot with the header and categories beside it; notes below, full width on phones. */}
             <div className="flex items-start gap-3">
               <div className="aspect-video w-24 shrink-0 sm:w-36 overflow-hidden rounded-sm bg-fuselage-150 dark:bg-fuselage-800">
@@ -91,38 +145,12 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
                     <Trash2 className="size-4" aria-hidden />
                   </Button>
                 </div>
-                <div
-                  className="flex flex-wrap gap-1.5"
-                  role="radiogroup"
-                  aria-label={`Category of marker ${marker.number}`}
-                >
-                  {props.categories.map((category) => {
-                    const selected = marker.categoryId === category.id
-                    return (
-                      <button
-                        key={category.id}
-                        role="radio"
-                        aria-checked={selected}
-                        onClick={() =>
-                          props.send('setMarkerCategory', props.folderName, marker.id, selected ? null : category.id)
-                        }
-                        className={`flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs transition-colors ${
-                          selected
-                            ? 'border-transparent font-semibold'
-                            : 'border-border text-muted-foreground hover:text-foreground'
-                        }`}
-                        style={
-                          selected ? { backgroundColor: category.color, color: textOn(category.color) } : undefined
-                        }
-                      >
-                        {!selected && (
-                          <span className="size-2 rounded-full" style={{ backgroundColor: category.color }} />
-                        )}
-                        {category.name}
-                      </button>
-                    )
-                  })}
-                </div>
+                <CategoryChips
+                  categories={props.categories}
+                  selectedIds={marker.categoryIds}
+                  label={`Categories of marker ${marker.number}`}
+                  onToggle={(categoryId) => props.send('toggleMarkerCategory', props.folderName, marker.id, categoryId)}
+                />
               </div>
             </div>
             {marker.notes.length > 0 && (

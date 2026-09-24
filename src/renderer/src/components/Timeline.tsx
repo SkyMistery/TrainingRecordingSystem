@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import type { Marker, MarkerCategory } from '@shared/types'
 import { formatDuration } from '../format'
-import { categoryColor, textOn } from './MarkerList'
+import { markerColors, paint, textOn } from './MarkerList'
 
 interface TimelineProps {
   durationMs: number
@@ -57,7 +57,7 @@ export function Timeline(props: TimelineProps): React.JSX.Element {
         />
 
         {props.markers.map((marker) => {
-          const color = categoryColor(props.categories, marker.categoryId)
+          const colors = markerColors(props.categories, marker.categoryIds)
           const current = marker.id === props.currentMarkerId
           return (
             <div key={marker.id}>
@@ -67,7 +67,7 @@ export function Timeline(props: TimelineProps): React.JSX.Element {
                   style={{
                     left: pct(marker.timeMs),
                     width: `max(4px, calc(${pct(marker.endMs)} - ${pct(marker.timeMs)}))`,
-                    backgroundColor: color
+                    background: paint(colors)
                   }}
                 />
               )}
@@ -85,11 +85,11 @@ export function Timeline(props: TimelineProps): React.JSX.Element {
                   className={`flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-bold ${
                     current ? 'ring-2 ring-foreground ring-offset-1 ring-offset-body' : ''
                   }`}
-                  style={{ backgroundColor: color, color: textOn(color) }}
+                  style={{ background: paint(colors), color: textOn(colors[0]) }}
                 >
                   {marker.number}
                 </span>
-                <span className="h-6 w-0.5" style={{ backgroundColor: color }} />
+                <span className="h-6 w-0.5" style={{ background: paint(colors, '180deg') }} />
               </button>
             </div>
           )

@@ -54,6 +54,7 @@ export interface SessionMetadata {
   traineeVid: string
   traineeName: string
   position: string
+  /** Session type shown as "Session type": Training or Exam (older sessions may hold other values). */
   trainingType: string
   trainerVid: string
   /** ISO date (yyyy-mm-dd). */
@@ -125,7 +126,8 @@ export interface Marker {
   pressedAtMs: number
   /** Range end; null while a range is still open, always null for points. */
   endMs: number | null
-  categoryId: string | null
+  /** A marker can belong to several categories (e.g. phraseology and coordination). */
+  categoryIds: string[]
   /** Screenshot path relative to the session folder. */
   screenshot: string | null
   createdAt: string
@@ -296,7 +298,8 @@ export interface SessionCommands {
   toggleRange: []
   startNote: []
   stopNote: []
-  setMarkerCategory: [folderName: string, markerId: string, categoryId: string | null]
+  /** Adds the category to the marker, or removes it if the marker already has it. */
+  toggleMarkerCategory: [folderName: string, markerId: string, categoryId: string]
   setMarkerTimes: [folderName: string, markerId: string, times: { timeMs?: number; endMs?: number | null }]
   deleteMarker: [folderName: string, markerId: string]
   setNoteText: [folderName: string, markerId: string, noteId: string, text: string | null]

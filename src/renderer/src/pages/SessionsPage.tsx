@@ -11,6 +11,7 @@ import {
   DropdownMenu,
   Input,
   Label,
+  Select,
   TableBody,
   TableCell,
   TableHead,
@@ -23,7 +24,10 @@ import type { AppState, SessionMetadata, SessionSummary } from '@shared/types'
 import { FirstRunChecklist, useChecklist } from '../components/FirstRunChecklist'
 import { formatDuration, todayIso } from '../format'
 
-const TRAINING_TYPES = ['Training', 'Exam', 'Checkout', 'Assessment']
+const SESSION_TYPES = [
+  { value: 'Training', label: 'Training' },
+  { value: 'Exam', label: 'Exam' }
+]
 
 function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStarted: () => void }): React.JSX.Element {
   const [form, setForm] = useState<SessionMetadata>({
@@ -89,13 +93,12 @@ function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStart
           <Input id="position" placeholder="e.g. LIRF_APP" value={form.position} onChange={set('position')} />
         </div>
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="training-type">Training type</Label>
-          <Input id="training-type" list="training-types" value={form.trainingType} onChange={set('trainingType')} />
-          <datalist id="training-types">
-            {TRAINING_TYPES.map((type) => (
-              <option key={type} value={type} />
-            ))}
-          </datalist>
+          <Label>Session type</Label>
+          <Select
+            value={form.trainingType}
+            onValueChange={(trainingType) => setForm((f) => ({ ...f, trainingType }))}
+            items={SESSION_TYPES}
+          />
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="trainer-vid">Your VID (trainer)</Label>
@@ -158,7 +161,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
     <div className="flex flex-col gap-6">
       <CardRoot>
         <CardHeader>
-          <CardTitle>New training session</CardTitle>
+          <CardTitle>New session</CardTitle>
           <CardDescription>Record the Aurora screen, mark significant moments and dictate voice notes.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -181,7 +184,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
             <Dialog
               open={dialogOpen}
               onOpenChange={setDialogOpen}
-              title="New training session"
+              title="New session"
               description="These details name the session folder and help you find it later."
               trigger={
                 <Button disabled={!ready}>

@@ -101,7 +101,7 @@ async function main() {
           t: m.timeMs,
           pressed: m.pressedAtMs,
           end: m.endMs,
-          cat: m.categoryId,
+          cat: m.categoryIds.join(','),
           shot: m.screenshot
         }))
       )
@@ -121,12 +121,12 @@ async function main() {
   for (const m of file.markers) {
     const shot = m.screenshot && join(session.folder, m.screenshot)
     log(
-      `#${m.number} ${m.kind} t=${m.timeMs} pressed=${m.pressedAtMs} end=${m.endMs} cat=${m.categoryId} screenshot=${shot && existsSync(shot) ? 'OK' : 'MISSING'}`
+      `#${m.number} ${m.kind} t=${m.timeMs} pressed=${m.pressedAtMs} end=${m.endMs} cat=${m.categoryIds.join(',')} screenshot=${shot && existsSync(shot) ? 'OK' : 'MISSING'}`
     )
   }
   const folderName = session.folder.split(/[\/]/).pop()
   const img = await evaluate(
-    `new Promise((res) => { const i = new Image(); i.onload = () => res('loaded ' + i.naturalWidth + 'x' + i.naturalHeight); i.onerror = () => res('error'); i.src = 'trs-media://sessions/' + encodeURIComponent(${JSON.stringify(folderName)}) + '/screenshots/m-0001.png' })`
+    `new Promise((res) => { const i = new Image(); i.onload = () => res('loaded ' + i.naturalWidth + 'x' + i.naturalHeight); i.onerror = () => res('error'); i.src = 'trs-media://sessions/' + encodeURIComponent(${JSON.stringify(folderName)}) + '/' + encodeURIComponent(${JSON.stringify(folderName + '_screen')}) + '/m-0001.png' })`
   )
   log('screenshot via trs-media:', img)
   const escape = await evaluate(

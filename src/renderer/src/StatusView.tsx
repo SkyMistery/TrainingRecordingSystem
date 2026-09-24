@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { MarkerFeedback } from '@shared/types'
 import { formatDuration } from './format'
 import { useAppState, useNow } from './hooks'
-import { categoryColor, markerTimeLabel } from './components/MarkerList'
+import { markerColors, paint, markerTimeLabel } from './components/MarkerList'
 import { useTheme } from './useTheme'
 
 const FLASH_LABEL: Record<MarkerFeedback, string> = {
@@ -40,7 +40,7 @@ export function StatusView(): React.JSX.Element {
   }
   const last = recording.markers.at(-1)
   const categories = state.markerSettings.categories
-  const lastCategory = categories.find((category) => category.id === last?.categoryId)
+  const lastCategories = categories.filter((category) => last?.categoryIds.includes(category.id))
 
   return (
     <div
@@ -74,12 +74,12 @@ export function StatusView(): React.JSX.Element {
           <>
             <span
               className="size-2.5 shrink-0 rounded-full"
-              style={{ backgroundColor: categoryColor(categories, last.categoryId) }}
+              style={{ background: paint(markerColors(categories, last.categoryIds)) }}
               aria-hidden
             />
             <span className="truncate">
               #{last.number} at {markerTimeLabel(last, recording.openRangeId)}
-              {lastCategory && ` · ${lastCategory.name}`}
+              {lastCategories.length > 0 && ` · ${lastCategories.map((category) => category.name).join(', ')}`}
             </span>
           </>
         ) : (

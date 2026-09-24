@@ -18,7 +18,7 @@ import {
 import { mediaUrl } from '@shared/media'
 import { byTime, currentMarker, nextMarker, previousMarker } from '@shared/markers'
 import type { AppState, PlayerCommand, ReviewState } from '@shared/types'
-import { categoryColor } from '../components/MarkerList'
+import { markerColors, paint } from '../components/MarkerList'
 import { PlaybackRates } from '../components/PlaybackRates'
 import { Timeline } from '../components/Timeline'
 import { useZoom } from '../components/useZoom'
@@ -343,7 +343,7 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
                 <div className="flex items-center gap-1.5 px-0.5 text-xs">
                   <span
                     className="size-2.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: categoryColor(categories, marker.categoryId) }}
+                    style={{ background: paint(markerColors(categories, marker.categoryIds)) }}
                   />
                   <span className="font-semibold">#{marker.number}</span>
                   <span className="font-mono text-muted-foreground">

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type { SessionFile, SessionMetadata, SessionSummary } from '../shared/types'
 
 const SESSION_FILE = 'session.json'
@@ -14,6 +14,8 @@ export async function writeJsonAtomic(filePath: string, data: unknown): Promise<
 
 function safeSegment(value: string): string {
   return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // "Nicolò" → "Nicolo"
     .trim()
     .replace(/[^A-Za-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
@@ -25,8 +27,11 @@ export async function createSession(
   metadata: SessionMetadata
 ): Promise<{ folder: string; session: SessionFile }> {
   const now = new Date()
-  const stamp = `${metadata.date}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-  const name = [stamp, safeSegment(metadata.traineeVid), safeSegment(metadata.position)].filter(Boolean).join('_')
+  // e.g. 2026-09-24_123456_Mario-Rossi_LIRF_APP; a second session the same day gets "-2".
+  const name = [metadata.date, metadata.traineeVid, metadata.traineeName, metadata.position]
+    .map(safeSegment)
+    .filter(Boolean)
+    .join('_')
 
   let folder = join(root, name)
   for (let i = 2; await exists(folder); i++) folder = join(root, `${name}-${i}`)
@@ -51,7 +56,15 @@ export async function saveSession(folder: string, session: SessionFile): Promise
 /** Reads a session, filling in fields added by later versions of the app. */
 export async function loadSession(folder: string): Promise<SessionFile> {
   const session = JSON.parse(await readFile(join(folder, SESSION_FILE), 'utf8')) as SessionFile
-  session.markers = (session.markers ?? []).map((marker) => ({ ...marker, notes: marker.notes ?? [] }))
+  session.markers = (session.markers ?? []).map((stored) => {
+    // Before v1.1 a marker had a single category.
+    const { categoryId, ...marker } = stored as typeof stored & { categoryId?: string | null }
+    return {
+      ...marker,
+      categoryIds: marker.categoryIds ?? (categoryId ? [categoryId] : []),
+      notes: marker.notes ?? []
+    }
+  })
   return session
 }
 
@@ -81,6 +94,11 @@ export class SessionStore {
   }
 }
 
+/** Screenshots folder of a session, named after the session so it can be shared on its own. */
+export function screenshotsDir(folder: string): string {
+  return `${basename(folder)}_screen`
+}
+
 export async function listSessions(root: string): Promise<SessionSummary[]> {
   let entries: string[]
   try {
@@ -88,13 +106,14 @@ export async function listSessions(root: string): Promise<SessionSummary[]> {
   } catch {
     return []
   }
-  const sessions: SessionSummary[] = []
+  const sessions: (SessionSummary & { createdAt: string })[] = []
   for (const entry of entries) {
     const folder = join(root, entry)
     try {
       const session = await loadSession(folder)
       sessions.push({
         id: session.id,
+        createdAt: session.createdAt,
         folder,
         folderName: entry,
         metadata: session.metadata,
@@ -107,7 +126,10 @@ export async function listSessions(root: string): Promise<SessionSummary[]> {
       // Not a session folder.
     }
   }
-  return sessions.sort((a, b) => b.folder.localeCompare(a.folder))
+  // Newest first; folder names no longer carry the time of day.
+  return sessions
+    .sort((a, b) => b.metadata.date.localeCompare(a.metadata.date) || b.createdAt.localeCompare(a.createdAt))
+    .map(({ createdAt: _createdAt, ...summary }) => summary)
 }
 
 /**

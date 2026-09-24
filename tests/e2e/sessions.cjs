@@ -54,7 +54,7 @@ function makeSession(name, notes) {
         timeMs: 1000,
         pressedAtMs: 1000,
         endMs: null,
-        categoryId: null,
+        categoryIds: [],
         screenshot: null,
         createdAt: new Date().toISOString(),
         notes: markerNotes
@@ -115,6 +115,12 @@ async function main() {
     })
   )
   const keep = makeSession('2026-09-24_1000_000000_E2E_KEEP', 2)
+  // Written by v1.0: a single categoryId per marker.
+  const legacyFile = join(keep, 'session.json')
+  const legacy = JSON.parse(readFileSync(legacyFile, 'utf8'))
+  delete legacy.markers[0].categoryIds
+  legacy.markers[0].categoryId = 'positive'
+  writeFileSync(legacyFile, JSON.stringify(legacy, null, 2))
   const remove = makeSession('2026-09-24_1100_000000_E2E_DELETE', 1)
 
   const app = spawn(
@@ -149,6 +155,23 @@ async function main() {
       notes.map((note) => note.status).join(', ')
     )
     check('the trainer’s edited text is kept', notes[0].text === 'edited by the trainer')
+    check(
+      'a v1.0 single category becomes a list',
+      JSON.stringify(kept.markers[0].categoryIds) === '["positive"]' && !('categoryId' in kept.markers[0]),
+      JSON.stringify(kept.markers[0])
+    )
+    const toggled = await page.evaluate(
+      `window.api.command('toggleMarkerCategory', '2026-09-24_1000_000000_E2E_KEEP', 'm1', 'separation').then(() => 'ok', (e) => e.message)`
+    )
+    const afterToggle = JSON.parse(readFileSync(join(keep, 'session.json'), 'utf8')).markers[0].categoryIds
+    check(
+      'a second category is added, the first kept',
+      toggled === 'ok' && JSON.stringify(afterToggle) === '["positive","separation"]',
+      JSON.stringify(afterToggle)
+    )
+    await page.evaluate(`window.api.command('toggleMarkerCategory', '2026-09-24_1000_000000_E2E_KEEP', 'm1', 'positive')`)
+    const afterRemove = JSON.parse(readFileSync(join(keep, 'session.json'), 'utf8')).markers[0].categoryIds
+    check('toggling again removes it', JSON.stringify(afterRemove) === '["separation"]', JSON.stringify(afterRemove))
 
     const escape = await page.evaluate(`window.api.deleteSession('..').then(() => 'deleted', (e) => e.message)`)
     check('deleting outside the sessions folder is refused', escape !== 'deleted', escape)

@@ -18,7 +18,14 @@ import {
 import { byTime, currentMarker, livePosition } from '@shared/markers'
 import type { CompanionState, Marker, PlayerCommand, RecordingState, ReviewState } from '@shared/types'
 import type { SendCommand } from '../commands'
-import { MarkerList, categoryColor, markerTimeLabel, textOn } from '../components/MarkerList'
+import {
+  CategoryChips,
+  CategoryStripe,
+  MarkerList,
+  markerColors,
+  markerTimeLabel,
+  paint
+} from '../components/MarkerList'
 import { NoteItem } from '../components/NoteItem'
 import { PlaybackRates } from '../components/PlaybackRates'
 import { Timeline } from '../components/Timeline'
@@ -137,14 +144,14 @@ function MarkerDetail({
   positionMs: number
   send: SendCommand
 }): React.JSX.Element {
-  const color = categoryColor(state.categories, marker.categoryId)
+  const colors = markerColors(state.categories, marker.categoryIds)
   const at = Math.round(positionMs)
   return (
     <section
-      className="flex flex-col gap-3 rounded-lg border border-border bg-background p-4"
-      style={{ borderLeft: `6px solid ${color}` }}
+      className="relative flex flex-col gap-3 overflow-hidden rounded-lg border border-border bg-background p-4 pl-6"
       aria-label={`Marker ${marker.number}`}
     >
+      <CategoryStripe colors={colors} width={6} />
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-head text-xl font-semibold">#{marker.number}</span>
         <button
@@ -154,21 +161,13 @@ function MarkerDetail({
           {markerTimeLabel(marker, null)}
         </button>
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {state.categories.map((category) => {
-          const selected = marker.categoryId === category.id
-          return (
-            <button
-              key={category.id}
-              onClick={() => send('setMarkerCategory', review.folderName, marker.id, selected ? null : category.id)}
-              className={`rounded-full border px-2.5 py-1 text-xs ${selected ? 'border-transparent font-semibold' : 'border-border text-muted-foreground'}`}
-              style={selected ? { backgroundColor: category.color, color: textOn(category.color) } : undefined}
-            >
-              {category.name}
-            </button>
-          )
-        })}
-      </div>
+      <CategoryChips
+        categories={state.categories}
+        selectedIds={marker.categoryIds}
+        label={`Categories of marker ${marker.number}`}
+        size="md"
+        onToggle={(categoryId) => send('toggleMarkerCategory', review.folderName, marker.id, categoryId)}
+      />
       {marker.notes.length === 0 ? (
         <p className="text-sm text-muted-foreground">No voice notes on this marker.</p>
       ) : (
@@ -331,7 +330,7 @@ function ReviewView({
                 >
                   <span
                     className="size-2.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: categoryColor(state.categories, marker.categoryId) }}
+                    style={{ background: paint(markerColors(state.categories, marker.categoryIds)) }}
                   />
                   <span className="w-8 font-semibold">#{marker.number}</span>
                   <span className="w-28 shrink-0 font-mono text-xs">{markerTimeLabel(marker, null)}</span>

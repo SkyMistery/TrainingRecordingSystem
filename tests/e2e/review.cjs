@@ -249,14 +249,22 @@ async function main() {
 
   // --- Edits from the Companion ------------------------------------------------------------
   const point = companion.review.markers.find((m) => m.kind === 'point')
-  await send('setMarkerCategory', COPY, point.id, 'positive')
+  // A marker can have several categories: make sure it ends up with exactly these two.
+  for (const id of point.categoryIds) await send('toggleMarkerCategory', COPY, point.id, id)
+  await send('toggleMarkerCategory', COPY, point.id, 'positive')
+  await send('toggleMarkerCategory', COPY, point.id, 'separation')
   const note = range.notes[0]
   await send('setNoteText', COPY, range.id, note.id, 'Traffico: chi va prima tra la 126 e la 582?')
   await send('setMarkerTimes', COPY, range.id, { endMs: range.timeMs + 20000 })
   await sleep(400)
   const saved = JSON.parse(readFileSync(sessionFile, 'utf8'))
   const savedRange = saved.markers.find((m) => m.id === range.id)
-  check('Category saved to session.json', saved.markers.find((m) => m.id === point.id).categoryId === 'positive')
+  const savedPoint = saved.markers.find((m) => m.id === point.id)
+  check(
+    'Two categories saved to session.json',
+    JSON.stringify(savedPoint.categoryIds) === '["positive","separation"]' && !('categoryId' in savedPoint),
+    JSON.stringify(savedPoint.categoryIds)
+  )
   check(
     'Edited note text saved (transcript kept)',
     savedRange.notes[0].text === 'Traffico: chi va prima tra la 126 e la 582?' &&
@@ -264,14 +272,14 @@ async function main() {
   )
   check('Range end moved', savedRange.endMs === range.timeMs + 20000)
   const mainSees = await main.eval(
-    `window.api.getState().then(s => s.review.markers.find(m => m.kind === 'point').categoryId)`
+    `window.api.getState().then(s => s.review.markers.find(m => m.kind === 'point').categoryIds.join(','))`
   )
-  check('Edits reflected in the desktop app', mainSees === 'positive')
+  check('Edits reflected in the desktop app', mainSees === 'positive,separation', mainSees)
   check(
     'Bad marker id reports an error',
-    (await send('setMarkerCategory', COPY, 'nope', null)).error === 'Marker not found'
+    (await send('toggleMarkerCategory', COPY, 'nope', 'positive')).error === 'Marker not found'
   )
-  check('Other folders refused', (await send('setMarkerCategory', '..', point.id, null)).error === 'Unknown session')
+  check('Other folders refused', (await send('toggleMarkerCategory', '..', point.id, 'positive')).error === 'Unknown session')
 
   // --- Notes window ------------------------------------------------------------------------
   await main.eval('window.api.openNotesWindow()')

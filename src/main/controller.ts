@@ -34,7 +34,7 @@ import { openNotesWindow } from './notesWindow'
 import { GlobalHotkeys } from './hotkeys'
 import { ObsRecorder } from './recorder/ObsRecorder'
 import type { Recorder } from './recorder/Recorder'
-import { adoptRecording, createSession, listSessions, loadSession, SessionStore } from './sessions'
+import { adoptRecording, createSession, listSessions, loadSession, screenshotsDir, SessionStore } from './sessions'
 import { decryptSecret, encryptSecret, getSettings, updateSettings } from './settings'
 import { hideStatusWindow, showStatusWindow } from './statusWindow'
 import { Transcriber } from './transcriber'
@@ -96,9 +96,12 @@ export class Controller {
     toggleRange: () => this.toggleRange(),
     startNote: () => this.startNote(),
     stopNote: () => this.stopNote(),
-    setMarkerCategory: async (folderName, markerId, categoryId) => {
+    toggleMarkerCategory: async (folderName, markerId, categoryId) => {
       await this.editSession(folderName, (session) => {
-        this.findMarker(session, markerId).categoryId = categoryId
+        const marker = this.findMarker(session, markerId)
+        marker.categoryIds = marker.categoryIds.includes(categoryId)
+          ? marker.categoryIds.filter((id) => id !== categoryId)
+          : [...marker.categoryIds, categoryId]
       })
       this.feedback('category')
     },
@@ -498,7 +501,7 @@ export class Controller {
       timeMs: Math.max(0, pressedAtMs - preRollMs),
       pressedAtMs,
       endMs: null,
-      categoryId: null,
+      categoryIds: [],
       screenshot: null,
       createdAt: new Date().toISOString(),
       notes: []
@@ -512,9 +515,10 @@ export class Controller {
     this.publishRecording()
     this.feedback(feedback)
 
-    const relative = `screenshots/m-${String(marker.number).padStart(4, '0')}.png`
+    const dir = screenshotsDir(active.folder)
+    const relative = `${dir}/m-${String(marker.number).padStart(4, '0')}.png`
     try {
-      await mkdir(join(active.folder, 'screenshots'), { recursive: true })
+      await mkdir(join(active.folder, dir), { recursive: true })
       await this.recorder.screenshot(join(active.folder, relative))
       marker.screenshot = relative
       if (this.active === active) {
@@ -548,7 +552,7 @@ export class Controller {
     await this.commitMarker(active, marker, 'rangeStart')
   }
 
-  /** Category hotkeys tag the most recent marker of the session being recorded. */
+  /** Category hotkeys add (or remove) a category on the most recent marker of the session being recorded. */
   private async tagLatestMarker(categoryId: string): Promise<void> {
     const active = this.requireActive()
     const latest = active.session.markers.at(-1)
@@ -556,7 +560,7 @@ export class Controller {
       this.feedback('error')
       return
     }
-    await this.commands.setMarkerCategory(basename(active.folder), latest.id, categoryId)
+    await this.commands.toggleMarkerCategory(basename(active.folder), latest.id, categoryId)
   }
 
   private async deleteMarker(folderName: string, markerId: string): Promise<void> {

@@ -29,7 +29,7 @@ const ALLOWED_COMMANDS = new Set<SessionCommandName>([
   'toggleRange',
   'startNote',
   'stopNote',
-  'setMarkerCategory',
+  'toggleMarkerCategory',
   'setMarkerTimes',
   'deleteMarker',
   'setNoteText',
