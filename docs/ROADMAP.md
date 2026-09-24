@@ -29,6 +29,7 @@ Status (2026-09-24):
 | M3 Voice notes | done — v0.4.0 |
 | M4 Review and Companion | done — v0.5.0 |
 | M5 v1.0 | done — v1.0.0 |
+| v1.1 feedback | done — v1.1.0: several categories per marker, folder names with trainee and session type, Training/Exam session type |
 
 ### M0 — Foundations
 - Repository, MIT licence, documentation.
