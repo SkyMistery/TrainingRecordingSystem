@@ -3,14 +3,12 @@ import { Alert, Button } from '@ivao/atmosphere-react'
 import {
   Circle,
   CircleAlert,
-  FastForward,
   Flag,
   Mic,
   Moon,
   MoveHorizontal,
   Pause,
   Play,
-  Rewind,
   SkipBack,
   SkipForward,
   Sun
@@ -28,6 +26,7 @@ import {
 } from '../components/MarkerList'
 import { NoteItem } from '../components/NoteItem'
 import { PlaybackRates } from '../components/PlaybackRates'
+import { SkipButton } from '../components/SkipButton'
 import { Timeline } from '../components/Timeline'
 import { formatDuration } from '../format'
 import { useNow } from '../hooks'
@@ -233,6 +232,7 @@ function ReviewView({
   const current = currentMarker(markers, positionMs)
   const shown = (follow ? current : markers.find((marker) => marker.id === selectedId)) ?? current
   const player = (command: PlayerCommand): void => send('playerCommand', command)
+  const skip = (deltaMs: number): void => player({ type: 'skip', deltaMs })
 
   return (
     <div className="flex flex-col gap-4">
@@ -246,7 +246,8 @@ function ReviewView({
         </div>
       </div>
 
-      <div className="flex items-center justify-center gap-2">
+      {/* A grid, so the seven buttons shrink to fit a phone. */}
+      <div className="mx-auto grid w-full max-w-md grid-cols-[auto_1fr_1fr_1.5fr_1fr_1fr_auto] items-center gap-1.5">
         <Button
           variant="outline"
           size="icon"
@@ -255,29 +256,18 @@ function ReviewView({
         >
           <SkipBack className="size-4" aria-hidden />
         </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          aria-label="Back 5 seconds"
-          onClick={() => player({ type: 'skip', deltaMs: -5000 })}
-        >
-          <Rewind className="size-4" aria-hidden />
-        </Button>
+        <SkipButton seconds={-10} className="w-full px-0" onSkip={skip} />
+        <SkipButton seconds={-5} className="w-full px-0" onSkip={skip} />
         <Button
           size="lg"
+          className="w-full px-0"
           aria-label={review.player.playing ? 'Pause' : 'Play'}
           onClick={() => player({ type: 'toggle' })}
         >
           {review.player.playing ? <Pause className="size-5" aria-hidden /> : <Play className="size-5" aria-hidden />}
         </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          aria-label="Forward 5 seconds"
-          onClick={() => player({ type: 'skip', deltaMs: 5000 })}
-        >
-          <FastForward className="size-4" aria-hidden />
-        </Button>
+        <SkipButton seconds={5} className="w-full px-0" onSkip={skip} />
+        <SkipButton seconds={10} className="w-full px-0" onSkip={skip} />
         <Button
           variant="outline"
           size="icon"

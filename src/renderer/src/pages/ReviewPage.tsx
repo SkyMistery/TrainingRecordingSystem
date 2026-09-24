@@ -6,8 +6,6 @@ import {
   NotebookPen,
   Pause,
   Play,
-  Rewind,
-  FastForward,
   Shrink,
   SkipBack,
   SkipForward,
@@ -20,6 +18,7 @@ import { byTime, currentMarker, nextMarker, previousMarker } from '@shared/marke
 import type { AppState, PlayerCommand, ReviewState } from '@shared/types'
 import { markerColors, paint } from '../components/MarkerList'
 import { PlaybackRates } from '../components/PlaybackRates'
+import { SkipButton } from '../components/SkipButton'
 import { Timeline } from '../components/Timeline'
 import { useZoom } from '../components/useZoom'
 import { formatDuration } from '../format'
@@ -128,6 +127,8 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
         k: () => apply({ type: 'toggle' }),
         ArrowLeft: () => apply({ type: 'skip', deltaMs: -step }),
         ArrowRight: () => apply({ type: 'skip', deltaMs: step }),
+        j: () => apply({ type: 'skip', deltaMs: -10_000 }),
+        l: () => apply({ type: 'skip', deltaMs: 10_000 }),
         PageUp: () => apply({ type: 'marker', direction: -1 }),
         PageDown: () => apply({ type: 'marker', direction: 1 }),
         '[': () => apply({ type: 'marker', direction: -1 }),
@@ -151,6 +152,8 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
 
   const { metadata } = review
   const src = mediaUrl(review.folderName, 'recording.mp4')
+
+  const skip = (deltaMs: number): void => apply({ type: 'skip', deltaMs })
 
   const player = (
     <div className="flex flex-col gap-3">
@@ -214,27 +217,13 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
         >
           <SkipBack className="size-4" aria-hidden />
         </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          aria-label="Back 5 seconds"
-          title="Back 5 s (←)"
-          onClick={() => apply({ type: 'skip', deltaMs: -5000 })}
-        >
-          <Rewind className="size-4" aria-hidden />
-        </Button>
+        <SkipButton seconds={-10} hint="J" onSkip={skip} />
+        <SkipButton seconds={-5} hint="←" onSkip={skip} />
         <Button size="lg" aria-label={playing ? 'Pause' : 'Play'} onClick={() => apply({ type: 'toggle' })}>
           {playing ? <Pause className="size-5" aria-hidden /> : <Play className="size-5" aria-hidden />}
         </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          aria-label="Forward 5 seconds"
-          title="Forward 5 s (→)"
-          onClick={() => apply({ type: 'skip', deltaMs: 5000 })}
-        >
-          <FastForward className="size-4" aria-hidden />
-        </Button>
+        <SkipButton seconds={5} hint="→" onSkip={skip} />
+        <SkipButton seconds={10} hint="L" onSkip={skip} />
         <Button
           variant="outline"
           size="icon"

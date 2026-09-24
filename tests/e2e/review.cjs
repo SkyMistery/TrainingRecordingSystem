@@ -368,6 +368,34 @@ async function main() {
     mainRate === 1.5 && shownRate === 'true',
     `rate ${mainRate}, selected ${shownRate}`
   )
+  // The test's own Companion socket closed with the server restart: drive the video directly.
+  const onVideo = (expression) => main.eval(`document.querySelector("video").${expression}`)
+  await onVideo('currentTime = 20')
+  await sleep(500)
+  await clickIn('Back 10 seconds')
+  await sleep(800)
+  const afterBack10 = await videoTime()
+  check('Notes window: back 10 seconds', Math.abs(afterBack10 - 10) < 0.5, afterBack10.toFixed(2) + ' s')
+  await clickIn('Forward 10 seconds')
+  await sleep(800)
+  const afterForward10 = await videoTime()
+  check('Notes window: forward 10 seconds', Math.abs(afterForward10 - 20) < 0.5, afterForward10.toFixed(2) + ' s')
+  await clickIn('10× speed')
+  await onVideo('currentTime = 0')
+  await onVideo('play()')
+  // Measured once playing (the start may wait for the decoder).
+  await sleep(1000)
+  const fastFrom = await videoTime()
+  await sleep(1000)
+  const fastTime = (await videoTime()) - fastFrom
+  const fastState = await onVideo('paused ? "paused" : "playing"')
+  await onVideo('pause()')
+  const fastRate = await onVideo('playbackRate')
+  check(
+    '10× speed plays ten times faster',
+    fastRate === 10 && fastTime > 6,
+    `rate ${fastRate}, ${fastTime.toFixed(2)} s of video in 1 s, from ${fastFrom.toFixed(2)} s (${fastState})`
+  )
   await clickIn('1× speed')
   await notes.screenshot(join(OUT, 'trs-companion-review.png'))
   await main.screenshot(join(OUT, 'trs-review-main.png'))

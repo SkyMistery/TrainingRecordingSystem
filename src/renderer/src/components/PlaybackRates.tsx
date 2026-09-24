@@ -1,4 +1,4 @@
-export const PLAYBACK_RATES = [0.5, 1, 1.25, 1.5, 2]
+export const PLAYBACK_RATES = [0.5, 1, 1.25, 1.5, 2, 5, 10]
 
 /** Playback speed buttons, shared by the review player and the notes window. */
 export function PlaybackRates({

@@ -190,10 +190,15 @@ so you can share it on Discord.
 |---|---|
 | Space / K | play / pause |
 | ← → | 5 s back / forward (Shift: 30 s) |
+| J L | 10 s back / forward |
 | [ ] or Page Up / Down | previous / next marker |
 | mouse wheel, + − | zoom at the cursor; drag to move |
 | 0 or double-click | reset zoom |
 | F | full window (Esc to exit) |
+
+The buttons under the video also jump 5 or 10 s, and set the speed from 0.5×
+to 10× (5× and 10× to skim through quiet parts; the sound may be muted at
+those speeds).
 
 Zooming in on a label keeps it readable even through Discord's compression
 (720p without Nitro).
