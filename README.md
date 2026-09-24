@@ -5,9 +5,8 @@ moments while it happens, attach voice notes that are transcribed
 automatically, and review everything during the debriefing — sharing the
 recording on Discord while your notes stay on another screen or a tablet.
 
-> Status: early development. Recording (M1), markers (M2) and voice notes (M3)
-> are released; the review player and Companion (M4) are done and tested,
-> release pending. See the [roadmap](docs/ROADMAP.md).
+> Status: v1.0 — recording, markers, voice notes, review and Companion are
+> released. See the [roadmap](docs/ROADMAP.md) and [future ideas](docs/FUTURE.md).
 
 ## Features
 
@@ -23,6 +22,8 @@ recording on Discord while your notes stay on another screen or a tablet.
   keyboard shortcuts — safe to share: it never shows your notes.
 - Companion page for your notes and remote control: a window on a second
   monitor, or a phone/tablet paired with a QR code.
+- Sessions list with review, delete (to the Recycle Bin) and transcribe
+  again; configurable sessions folder; first-run checklist.
 - Day and Night themes following the IVAO brand and the Atmosphere design
   system. English UI.
 

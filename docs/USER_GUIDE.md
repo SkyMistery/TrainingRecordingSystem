@@ -4,6 +4,17 @@ Training Recording System (TRS) records a training session from Aurora, lets
 you mark significant moments and dictate notes while it happens, and replays
 everything during the debriefing — with your notes kept on a separate screen.
 
+## Install
+
+You need Windows 10 (2004) or later and [OBS Studio](https://obsproject.com/)
+30.2 or later.
+
+Download `TrainingRecordingSystem-Setup-x.y.z.exe` from
+[Releases](https://github.com/SkyMistery/TrainingRecordingSystem/releases) and
+run it. The installer is not code-signed, so Windows SmartScreen may warn:
+choose **More info → Run anyway**. The app then updates itself when a new
+version is published.
+
 ## 1. First setup
 
 Until everything is set up, the Sessions page shows a **Before your first
