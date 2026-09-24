@@ -73,8 +73,13 @@ jobs:
             exit 1
           fi
           if [ "$COUNT" -eq 0 ]; then
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --title "${TAG#v}" --generate-notes
-            DRAFTS=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id")
+            # The id comes from the answer: a new draft isn't listed right away.
+            DRAFTS=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$TAG" -f name="${TAG#v}" \
+              -F draft=true -F generate_release_notes=true --jq .id)
+          fi
+          if [ -z "$DRAFTS" ]; then
+            echo "::error::No draft release id for $TAG"
+            exit 1
           fi
           echo "RELEASE_ID=$DRAFTS" >> "$GITHUB_ENV"
       - if: steps.existing.outputs.published != 'true'
