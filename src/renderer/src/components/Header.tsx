@@ -1,7 +1,19 @@
 import { useState } from 'react'
 import { Alert, Button, Dialog, Switch } from '@ivao/atmosphere-react'
-import { BookOpen, CircleAlert, Monitor, Moon, Plug, QrCode, Settings2, ShieldAlert, Sun } from 'lucide-react'
-import type { CompanionInfo, CompanionSettings, ObsStatus } from '@shared/types'
+import {
+  BookOpen,
+  CircleAlert,
+  Download,
+  Monitor,
+  Moon,
+  Plug,
+  QrCode,
+  RefreshCw,
+  Settings2,
+  ShieldAlert,
+  Sun
+} from 'lucide-react'
+import type { CompanionInfo, CompanionSettings, ObsStatus, UpdateState } from '@shared/types'
 import symbol from '../assets/it-symbol-white.svg'
 import { CompanionPairing } from './CompanionCard'
 import { expandSection } from './SetupSection'
@@ -45,6 +57,8 @@ interface HeaderProps {
   onThemeChange: (preference: ThemePreference) => void
   /** Shown once the app state is known and the Companion is enabled. */
   companion: { info: CompanionInfo; settings: CompanionSettings; reviewOpen: boolean } | null
+  update: UpdateState | null
+  recording: boolean
 }
 
 function Segmented<T extends string>({
@@ -82,6 +96,64 @@ function Segmented<T extends string>({
         )
       })}
     </div>
+  )
+}
+
+/**
+ * A new version: its download progress, then a button to install it now.
+ * Closing the app installs it too; never in the middle of a recording.
+ */
+function UpdateButton({ update, recording }: { update: UpdateState; recording: boolean }): React.JSX.Element {
+  const [error, setError] = useState<string | null>(null)
+  const [installing, setInstalling] = useState(false)
+  if (update.status !== 'ready') {
+    return (
+      <span
+        className="flex h-7 items-center gap-1.5 px-2 text-xs text-white/80"
+        title={
+          update.status === 'error'
+            ? 'The download stopped: it is tried again later.'
+            : 'Downloading in the background: it installs when you close the app.'
+        }
+      >
+        <Download className="size-3.5" aria-hidden />
+        {update.status === 'error'
+          ? `Update ${update.version} paused`
+          : `Update ${update.version} · ${update.percent}%`}
+      </span>
+    )
+  }
+  return (
+    <>
+      <button
+        className="flex h-7 items-center gap-1.5 rounded-sm bg-semantic-green-600 px-3 text-xs font-semibold text-white hover:bg-semantic-green-700 disabled:opacity-60"
+        disabled={recording || installing}
+        title={
+          recording
+            ? 'Stop the recording first. The update also installs when you close the app.'
+            : `Install version ${update.version} now and restart`
+        }
+        onClick={() => {
+          setError(null)
+          setInstalling(true)
+          window.api.installUpdate().catch((e: unknown) => {
+            setInstalling(false)
+            setError(e instanceof Error ? e.message : String(e))
+          })
+        }}
+      >
+        <RefreshCw className={`size-3.5 ${installing ? 'animate-spin' : ''}`} aria-hidden />
+        {installing ? 'Updating…' : `Restart to update (${update.version})`}
+      </button>
+      <Dialog open={error !== null} onOpenChange={(open) => !open && setError(null)} title="Could not update">
+        <Alert
+          variant="destructive"
+          Icon={CircleAlert}
+          title="The update was not installed"
+          description={error ?? ''}
+        />
+      </Dialog>
+    </>
   )
 }
 
@@ -242,6 +314,7 @@ export function Header(props: HeaderProps): React.JSX.Element {
           <BookOpen className="size-3.5" aria-hidden />
           Guide
         </a>
+        {props.update && <UpdateButton update={props.update} recording={props.recording} />}
         {props.companion?.settings.enabled && <CompanionButton {...props.companion} />}
         <ObsStatusButton
           status={props.obsStatus}

@@ -1,11 +1,11 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell } from 'electron'
-import { autoUpdater } from 'electron-updater'
 import type { Theme, ThemePreference, ThemeState } from '../shared/theme'
 import { isAppPage, loadAppPage } from './appPages'
 import { Controller } from './controller'
 import { handleMediaScheme, registerMediaScheme } from './media'
 import { getSettings, updateSettings } from './settings'
+import { installUpdate, startUpdater } from './updater'
 
 registerMediaScheme()
 
@@ -92,8 +92,33 @@ function createMainWindow(): void {
   void loadAppPage(mainWindow)
 }
 
+/** Stops the recording and gives OBS its profile back, without ever hanging (OBS may not answer). */
+async function shutdown(): Promise<void> {
+  const timeout = new Promise<void>((resolve) =>
+    setTimeout(() => {
+      console.error('Shutdown took too long; quitting anyway')
+      resolve()
+    }, SHUTDOWN_TIMEOUT_MS)
+  )
+  await Promise.race([
+    controller?.shutdown().catch((error: unknown) => console.error('Shutdown failed', error)),
+    timeout
+  ])
+}
+
 function registerIpc(): void {
   ipcMain.handle('app:version', () => app.getVersion())
+  // "Restart to update": the app's own shutdown first, since the installer
+  // starts at once and would cut the OBS profile restore short.
+  ipcMain.handle('update:install', async (event) => {
+    if (!isAppPage(event.senderFrame?.url ?? '')) throw new Error('Not allowed')
+    if (controller?.isRecording()) throw new Error('Stop the recording before updating')
+    if (quitState !== 'running') return
+    quitState = 'shuttingDown'
+    await shutdown()
+    quitState = 'done'
+    installUpdate()
+  })
   ipcMain.handle('theme:get', (): ThemeState => ({ theme: effectiveTheme(), preference: getSettings().theme }))
   ipcMain.handle('theme:set', async (_event, preference: ThemePreference) => {
     applyThemePreference(preference)
@@ -142,11 +167,7 @@ app.whenReady().then(async () => {
   }
   createMainWindow()
 
-  if (app.isPackaged) {
-    autoUpdater.checkForUpdatesAndNotify().catch((error: unknown) => {
-      console.error('Update check failed', error)
-    })
-  }
+  startUpdater((update) => controller?.setUpdate(update))
 })
 
 app.on('window-all-closed', () => app.quit())
@@ -170,17 +191,7 @@ app.on('before-quit', (event) => {
       if (response !== 0) return
     }
     quitState = 'shuttingDown'
-    // OBS may not answer (frozen, or closed mid-request): never hang on quit.
-    const timeout = new Promise<void>((resolve) =>
-      setTimeout(() => {
-        console.error('Shutdown took too long; quitting anyway')
-        resolve()
-      }, SHUTDOWN_TIMEOUT_MS)
-    )
-    await Promise.race([
-      controller?.shutdown().catch((error: unknown) => console.error('Shutdown failed', error)),
-      timeout
-    ])
+    await shutdown()
     quitState = 'done'
     app.quit()
   })()

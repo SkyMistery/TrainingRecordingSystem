@@ -202,6 +202,14 @@ export interface RecordingState {
   dictatingMarkerId: string | null
 }
 
+/** A newer version of the app found on GitHub Releases. */
+export interface UpdateState {
+  /** "error": the download stopped; the next check tries again. */
+  status: 'downloading' | 'ready' | 'error'
+  version: string
+  percent: number
+}
+
 export interface AppState {
   obs: { status: ObsStatus; error: string | null; version: string | null }
   recording: RecordingState | null
@@ -216,6 +224,7 @@ export interface AppState {
   sessionsDir: string
   /** Why voice notes can't be recorded right now (microphone problem), if anything. */
   microphoneError: string | null
+  update: UpdateState | null
   busy: boolean
 }
 

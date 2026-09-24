@@ -35,6 +35,8 @@ export function App(): React.JSX.Element {
         companion={
           state ? { info: state.companion, settings: state.companionSettings, reviewOpen: state.review !== null } : null
         }
+        update={state?.update ?? null}
+        recording={recording !== null}
       />
       <main className="flex flex-1 flex-col overflow-auto">
         {/* The review player uses the whole width: the recording is Full HD. */}

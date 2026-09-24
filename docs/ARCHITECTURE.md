@@ -51,6 +51,10 @@ Main process (src/main)
  ├─ statusWindow.ts    always-on-top, non-focusable status window
  ├─ displays.ts        which Electron display OBS records
  ├─ media.ts           file serving with HTTP ranges (trs-media:// and /media)
+ ├─ updater.ts         electron-updater: check at startup and every 6 h,
+ │                     background download, state in AppState.update;
+ │                     "Restart to update" runs the app's shutdown first
+ │                     (OBS restore), then the silent installer
  └─ settings.ts        settings.json in userData (password via safeStorage;
                        writes queued, .bak used if the file is damaged)
 

@@ -25,6 +25,7 @@ import type {
   SessionFile,
   SessionMetadata,
   TranscriptionState,
+  UpdateState,
   WhisperModelId
 } from '../shared/types'
 import { sameHotkey } from '../shared/hotkey'
@@ -190,6 +191,7 @@ export class Controller {
       transcription: this.transcriptionState(),
       review: null,
       companion: { running: false, error: null, urls: [], qr: null, clients: 0, publicNetwork: false },
+      update: null,
       busy: false
     }
     this.recorder = new ObsRecorder(
@@ -241,6 +243,10 @@ export class Controller {
 
   isRecording(): boolean {
     return this.active !== null
+  }
+
+  setUpdate(update: UpdateState | null): void {
+    this.patch({ update })
   }
 
   /** Each step runs even if an earlier one fails, so OBS still gets the trainer's profile back. */

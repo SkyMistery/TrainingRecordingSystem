@@ -12,8 +12,14 @@ You need Windows 10 (2004) or later and [OBS Studio](https://obsproject.com/)
 Download `TrainingRecordingSystem-Setup-x.y.z.exe` from
 [Releases](https://github.com/SkyMistery/TrainingRecordingSystem/releases) and
 run it. The installer is not code-signed, so Windows SmartScreen may warn:
-choose **More info → Run anyway**. The app then updates itself when a new
-version is published.
+choose **More info → Run anyway**.
+
+The app then updates itself. It looks for a new version at startup and every
+few hours and downloads it in the background: the top bar shows **Update
+x.y.z · 45%**, then **Restart to update**. Press it to install now (not
+possible while recording), or simply close the app: the update installs when
+it closes. Versions before 1.2.1 showed nothing until the download finished,
+so leave them open a minute or two.
 
 ## 1. First setup
 

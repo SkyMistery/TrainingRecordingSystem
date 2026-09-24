@@ -92,6 +92,7 @@ const api = {
   newCompanionToken: () => invoke<void>('companion:newToken'),
   refreshCompanion: () => invoke<void>('companion:refresh'),
   openNotesWindow: () => invoke<void>('companion:openWindow'),
+  installUpdate: () => invoke<void>('update:install'),
   openCompanionInBrowser: () => invoke<void>('companion:openBrowser'),
 
   // Hidden microphone window.
