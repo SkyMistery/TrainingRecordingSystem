@@ -230,6 +230,9 @@ export class Controller {
       await this.connectObs()
     })
 
+    // From the top bar: connect again with the saved host, port and password.
+    handle('obs:reconnect', () => this.connectObs())
+
     handle('capture:listDisplays', () => this.requireObs().listDisplays())
     handle('capture:listAudioTargets', (kind: AudioSourceKind) => this.requireObs().listAudioTargets(kind))
     handle('capture:preview', () => (this.recorder.isConnected() ? this.recorder.preview(640) : null))

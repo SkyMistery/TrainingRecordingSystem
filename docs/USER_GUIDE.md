@@ -33,6 +33,10 @@ TRS records through [OBS Studio](https://obsproject.com/) 30.2 or later.
 2. In TRS open **Setup → OBS Studio**, paste the password and press
    **Connect**.
 
+Next time, if OBS wasn't running when TRS started, click **OBS not connected ·
+Connect** in the top bar: TRS connects with the saved settings, and opens
+Setup if it can't.
+
 TRS uses its own OBS profile and scene collection ("IVAO TRS"): your own
 scenes are never changed, and OBS goes back to your profile when TRS closes.
 If OBS is already recording or streaming, TRS waits instead of switching.

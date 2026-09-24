@@ -13,6 +13,15 @@ function readCollapsed(): string[] {
   }
 }
 
+/** Makes a section open the next time the Setup page is shown. */
+export function expandSection(id: string): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(readCollapsed().filter((item) => item !== id)))
+  } catch {
+    // Opens collapsed: the trainer can still click it.
+  }
+}
+
 /** Which Setup sections are collapsed, remembered between launches. */
 export function useCollapsedSections(): {
   isOpen: (id: string) => boolean

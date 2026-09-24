@@ -52,6 +52,7 @@ const api = {
 
   getObsConnection: () => invoke<ObsConnectionConfig>('obs:getConnection'),
   connectObs: (config: ObsConnectionConfig) => invoke<void>('obs:connect', config),
+  reconnectObs: () => invoke<void>('obs:reconnect'),
 
   listDisplays: () => invoke<DisplayOption[]>('capture:listDisplays'),
   listAudioTargets: (kind: AudioSourceKind) => invoke<AudioTargetOption[]>('capture:listAudioTargets', kind),

@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { Alert, Dialog, Switch } from '@ivao/atmosphere-react'
-import { BookOpen, CircleAlert, Monitor, Moon, QrCode, ShieldAlert, Sun } from 'lucide-react'
+import { Alert, Button, Dialog, Switch } from '@ivao/atmosphere-react'
+import { BookOpen, CircleAlert, Monitor, Moon, Plug, QrCode, Settings2, ShieldAlert, Sun } from 'lucide-react'
 import type { CompanionInfo, CompanionSettings, ObsStatus } from '@shared/types'
 import symbol from '../assets/it-symbol-white.svg'
 import { CompanionPairing } from './CompanionCard'
+import { expandSection } from './SetupSection'
 import type { ThemePreference } from '@shared/theme'
 
 export type Page = 'sessions' | 'setup'
@@ -128,6 +129,72 @@ function CompanionButton({ info, settings }: { info: CompanionInfo; settings: Co
   )
 }
 
+/**
+ * OBS connection state. While disconnected it is a button that connects again
+ * with the saved settings, so the trainer doesn't have to open Setup.
+ */
+function ObsStatusButton({
+  status,
+  onOpenSetup
+}: {
+  status: ObsStatus
+  /** Absent while recording or reviewing, when the Setup page can't be shown. */
+  onOpenSetup?: () => void
+}): React.JSX.Element {
+  const [error, setError] = useState<string | null>(null)
+  const dot = <span className={`size-2 rounded-full ${OBS_DOT[status]}`} aria-hidden />
+
+  if (status === 'connected' || status === 'connecting') {
+    return (
+      <span className="flex items-center gap-2 text-xs text-white/80">
+        {dot}
+        {OBS_LABEL[status]}
+      </span>
+    )
+  }
+  return (
+    <>
+      <button
+        className="flex h-7 items-center gap-2 rounded-sm bg-white/10 px-3 text-xs text-white/80 hover:text-white"
+        title="Connect to OBS with the settings saved in Setup"
+        onClick={() => {
+          setError(null)
+          window.api.reconnectObs().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+        }}
+      >
+        {dot}
+        {OBS_LABEL[status]}
+        <span className="flex items-center gap-1 font-semibold text-white">
+          <Plug className="size-3.5" aria-hidden />
+          Connect
+        </span>
+      </button>
+      <Dialog open={error !== null} onOpenChange={(open) => !open && setError(null)} title="Could not connect to OBS">
+        <div className="flex flex-col gap-4">
+          <Alert variant="destructive" Icon={CircleAlert} title="OBS didn’t answer" description={error ?? ''} />
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setError(null)}>
+              Close
+            </Button>
+            {onOpenSetup && (
+              <Button
+                onClick={() => {
+                  setError(null)
+                  expandSection('obs')
+                  onOpenSetup()
+                }}
+              >
+                <Settings2 className="size-4" aria-hidden />
+                Open Setup
+              </Button>
+            )}
+          </div>
+        </div>
+      </Dialog>
+    </>
+  )
+}
+
 export function Header(props: HeaderProps): React.JSX.Element {
   return (
     <header className="flex items-center justify-between gap-4 bg-atmos-700 px-4 py-3 text-white dark:bg-fuselage-800">
@@ -152,10 +219,10 @@ export function Header(props: HeaderProps): React.JSX.Element {
           Guide
         </a>
         {props.companion?.settings.enabled && <CompanionButton {...props.companion} />}
-        <span className="flex items-center gap-2 text-xs text-white/80">
-          <span className={`size-2 rounded-full ${OBS_DOT[props.obsStatus]}`} aria-hidden />
-          {OBS_LABEL[props.obsStatus]}
-        </span>
+        <ObsStatusButton
+          status={props.obsStatus}
+          onOpenSetup={props.page ? () => props.onNavigate('setup') : undefined}
+        />
         <Segmented
           label="Theme"
           role="radiogroup"
