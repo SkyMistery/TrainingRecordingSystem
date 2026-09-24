@@ -10,6 +10,12 @@ on:
 permissions:
   contents: write
 
+# GitHub occasionally starts a tag's workflow twice: queue the runs instead of
+# letting them build and create releases in parallel.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: windows-latest
@@ -17,19 +23,35 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      # A queued duplicate run stops here once the first one has published.
+      - name: Check for a published release
+        id: existing
+        shell: bash
+        run: |
+          if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "Release $TAG is already published: nothing to do."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.existing.outputs.published != 'true'
+        uses: actions/checkout@v5
+      - if: steps.existing.outputs.published != 'true'
+        uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm run typecheck
+      - if: steps.existing.outputs.published != 'true'
+        run: npm ci
+      - if: steps.existing.outputs.published != 'true'
+        run: npm run typecheck
       # Create the release up front as a draft: when electron-builder creates it
       # itself, its parallel uploads can race and produce duplicate releases.
       - name: Create draft release
+        if: steps.existing.outputs.published != 'true'
         shell: bash
         run: gh release create "$TAG" --draft --title "${TAG#v}" --generate-notes
-      - run: npm run release
+      - if: steps.existing.outputs.published != 'true'
+        run: npm run release
       - name: Publish release
+        if: steps.existing.outputs.published != 'true'
         shell: bash
         run: gh release edit "$TAG" --draft=false --latest
