@@ -5,7 +5,7 @@ moments while it happens, attach voice notes that are transcribed
 automatically, and review everything during the debriefing — sharing the
 recording on Discord while your notes stay on another screen or a tablet.
 
-> Status: v1.3 — recording, markers, voice notes, review and Companion are
+> Status: v1.4 — recording, markers, voice notes, review and Companion are
 > released. See the [roadmap](docs/ROADMAP.md) and [future ideas](docs/FUTURE.md).
 
 ## Features
@@ -13,13 +13,16 @@ recording on Discord while your notes stay on another screen or a tablet.
 - Full-screen recording of the monitor where Aurora runs (insets included),
   with separate, mutable audio sources (single applications, desktop audio,
   microphone) — powered by OBS Studio, using its own profile and scenes.
+- Private windows (such as Aurora's COM BOX) covered in the recording and
+  screenshots, wherever you move them.
 - Global hotkeys that work while Aurora has focus: point markers with a
   full-resolution screenshot, range markers, optional colour-coded categories,
   configurable pre-roll.
 - Push-to-talk voice notes, transcribed offline with Whisper; your microphone
   is muted in the recording while you dictate.
-- Review player with a timeline of markers and ranges, zoom, speed control and
-  keyboard shortcuts — safe to share: it never shows your notes.
+- Review player with a timeline of markers and ranges, zoom, speed up to 10×,
+  5 and 10-second jumps and keyboard shortcuts — safe to share: it never shows
+  your notes.
 - Companion page for your notes and remote control: a window on a second
   monitor, or a phone/tablet paired with a QR code.
 - Sessions list with review, delete (to the Recycle Bin) and transcribe
