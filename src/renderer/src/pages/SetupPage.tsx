@@ -1,17 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import {
-  Alert,
-  Button,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardRoot,
-  CardTitle,
-  Input,
-  Label,
-  Select
-} from '@ivao/atmosphere-react'
-import { CircleAlert, Plug, Plus, RefreshCw } from 'lucide-react'
+import { Alert, Button, Input, Label, Select } from '@ivao/atmosphere-react'
+import { ChevronsDownUp, ChevronsUpDown, CircleAlert, Plug, Plus, RefreshCw } from 'lucide-react'
 import type {
   AppState,
   AudioSourceConfig,
@@ -25,6 +14,7 @@ import type {
 import { AudioMixer } from '../components/AudioMixer'
 import { CompanionCard } from '../components/CompanionCard'
 import { MarkersCard } from '../components/MarkersCard'
+import { SetupSection, useCollapsedSections, type SectionProps } from '../components/SetupSection'
 import { VoiceNotesCard } from '../components/VoiceNotesCard'
 import { useAudioLevels } from '../hooks'
 
@@ -49,7 +39,7 @@ function ErrorAlert({ message }: { message: string | null }): React.JSX.Element 
 
 // --- OBS connection ------------------------------------------------------------
 
-function ObsConnectionCard({ state }: { state: AppState }): React.JSX.Element {
+function ObsConnectionCard({ state, section }: { state: AppState; section: SectionProps }): React.JSX.Element {
   const [host, setHost] = useState('127.0.0.1')
   const [port, setPort] = useState('4455')
   const [password, setPassword] = useState('')
@@ -78,51 +68,52 @@ function ObsConnectionCard({ state }: { state: AppState }): React.JSX.Element {
 
   const { obs } = state
   return (
-    <CardRoot>
-      <CardHeader>
-        <CardTitle>OBS Studio</CardTitle>
-        <CardDescription>
+    <SetupSection
+      title="OBS Studio"
+      description={
+        <>
           OBS 30.2 or later records the session. In OBS open Tools → WebSocket Server Settings, tick “Enable WebSocket
           server” and copy the password here. The app uses its own OBS profile and scenes, and gives yours back when it
           closes.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <form
-          className="grid grid-cols-[1fr_7rem_1fr_auto] items-end gap-3"
-          onSubmit={(event) => {
-            event.preventDefault()
-            connect()
-          }}
-        >
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="obs-host">Host</Label>
-            <Input id="obs-host" value={host} onChange={(e) => setHost(e.target.value)} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="obs-port">Port</Label>
-            <Input id="obs-port" inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value)} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="obs-password">Password</Label>
-            <Input
-              id="obs-password"
-              type="password"
-              autoComplete="off"
-              placeholder={hasPassword ? 'Saved — type to change' : 'WebSocket server password'}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-          <Button type="submit" isLoading={obs.status === 'connecting'} disabled={state.recording !== null}>
-            <Plug className="size-4" aria-hidden />
-            {obs.status === 'connected' ? 'Reconnect' : 'Connect'}
-          </Button>
-        </form>
-        {obs.status === 'connected' && <p className="text-sm text-muted-foreground">Connected to OBS {obs.version}.</p>}
-        <ErrorAlert message={error ?? (obs.status === 'error' ? obs.error : null)} />
-      </CardContent>
-    </CardRoot>
+        </>
+      }
+      contentClassName="flex flex-col gap-4"
+      {...section}
+    >
+      <form
+        className="grid grid-cols-[1fr_7rem_1fr_auto] items-end gap-3"
+        onSubmit={(event) => {
+          event.preventDefault()
+          connect()
+        }}
+      >
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="obs-host">Host</Label>
+          <Input id="obs-host" value={host} onChange={(e) => setHost(e.target.value)} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="obs-port">Port</Label>
+          <Input id="obs-port" inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value)} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="obs-password">Password</Label>
+          <Input
+            id="obs-password"
+            type="password"
+            autoComplete="off"
+            placeholder={hasPassword ? 'Saved — type to change' : 'WebSocket server password'}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </div>
+        <Button type="submit" isLoading={obs.status === 'connecting'} disabled={state.recording !== null}>
+          <Plug className="size-4" aria-hidden />
+          {obs.status === 'connected' ? 'Reconnect' : 'Connect'}
+        </Button>
+      </form>
+      {obs.status === 'connected' && <p className="text-sm text-muted-foreground">Connected to OBS {obs.version}.</p>}
+      <ErrorAlert message={error ?? (obs.status === 'error' ? obs.error : null)} />
+    </SetupSection>
   )
 }
 
@@ -137,10 +128,12 @@ const ENCODERS: { value: EncoderId; label: string }[] = [
 
 function DisplayCard({
   state,
-  save
+  save,
+  section
 }: {
   state: AppState
   save: (patch: Partial<CaptureConfig>) => void
+  section: SectionProps
 }): React.JSX.Element {
   const connected = state.obs.status === 'connected'
   const { capture } = state
@@ -157,7 +150,7 @@ function DisplayCard({
   }, [connected, loadDisplays])
 
   useEffect(() => {
-    if (!connected || !capture.display) {
+    if (!connected || !capture.display || !section.open) {
       setPreview(null)
       return
     }
@@ -171,7 +164,7 @@ function DisplayCard({
       cancelled = true
       clearInterval(timer)
     }
-  }, [connected, capture.display])
+  }, [connected, capture.display, section.open])
 
   const scaleOptions: { value: OutputScale; label: string }[] = [
     {
@@ -182,82 +175,79 @@ function DisplayCard({
   ]
 
   return (
-    <CardRoot>
-      <CardHeader>
-        <CardTitle>Display</CardTitle>
-        <CardDescription>
-          The whole monitor is recorded, so Aurora’s insets and floating windows are included.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <div className="grid grid-cols-[1fr_auto] items-end gap-3">
-          <div className="flex flex-col gap-1.5">
-            <Label>Monitor where Aurora runs</Label>
-            <Select
-              disabled={!connected || state.recording !== null}
-              placeholder={connected ? 'Choose a monitor' : 'Connect to OBS first'}
-              value={capture.display?.id}
-              onValueChange={(id) => {
-                const display = displays.find((item) => item.id === id)
-                if (display) save({ display })
-              }}
-              items={displays.map((display) => ({ value: display.id, label: display.name }))}
-            />
-          </div>
-          <Button
-            variant="outline"
-            size="icon"
-            aria-label="Refresh monitors"
-            disabled={!connected}
-            onClick={loadDisplays}
-          >
-            <RefreshCw className="size-4" aria-hidden />
-          </Button>
+    <SetupSection
+      title="Display"
+      description="The whole monitor is recorded, so Aurora’s insets and floating windows are included."
+      contentClassName="flex flex-col gap-4"
+      {...section}
+    >
+      <div className="grid grid-cols-[1fr_auto] items-end gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label>Monitor where Aurora runs</Label>
+          <Select
+            disabled={!connected || state.recording !== null}
+            placeholder={connected ? 'Choose a monitor' : 'Connect to OBS first'}
+            value={capture.display?.id}
+            onValueChange={(id) => {
+              const display = displays.find((item) => item.id === id)
+              if (display) save({ display })
+            }}
+            items={displays.map((display) => ({ value: display.id, label: display.name }))}
+          />
         </div>
+        <Button
+          variant="outline"
+          size="icon"
+          aria-label="Refresh monitors"
+          disabled={!connected}
+          onClick={loadDisplays}
+        >
+          <RefreshCw className="size-4" aria-hidden />
+        </Button>
+      </div>
 
-        <div className="mx-auto flex aspect-video w-full max-w-2xl items-center justify-center overflow-hidden rounded-md border border-border bg-fuselage-100 dark:bg-fuselage-900">
-          {preview ? (
-            <img src={preview} alt="Preview of the recorded monitor" className="size-full object-contain" />
-          ) : (
-            <span className="text-sm text-muted-foreground">No preview</span>
-          )}
-        </div>
+      <div className="mx-auto flex aspect-video w-full max-w-2xl items-center justify-center overflow-hidden rounded-md border border-border bg-fuselage-100 dark:bg-fuselage-900">
+        {preview ? (
+          <img src={preview} alt="Preview of the recorded monitor" className="size-full object-contain" />
+        ) : (
+          <span className="text-sm text-muted-foreground">No preview</span>
+        )}
+      </div>
 
-        <div className="grid grid-cols-3 gap-3">
-          <div className="flex flex-col gap-1.5">
-            <Label>Recording resolution</Label>
-            <Select
-              disabled={state.recording !== null}
-              value={capture.outputScale}
-              onValueChange={(value) => save({ outputScale: value as OutputScale })}
-              items={scaleOptions}
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label>Frame rate</Label>
-            <Select
-              disabled={state.recording !== null}
-              value={String(capture.fps)}
-              onValueChange={(value) => save({ fps: Number(value) as 30 | 60 })}
-              items={[
-                { value: '30', label: '30 fps (recommended)' },
-                { value: '60', label: '60 fps' }
-              ]}
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label>Encoder</Label>
-            <Select
-              disabled={state.recording !== null}
-              value={capture.encoder}
-              onValueChange={(value) => save({ encoder: value as EncoderId })}
-              items={ENCODERS}
-            />
-          </div>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label>Recording resolution</Label>
+          <Select
+            disabled={state.recording !== null}
+            value={capture.outputScale}
+            onValueChange={(value) => save({ outputScale: value as OutputScale })}
+            items={scaleOptions}
+          />
         </div>
-        <ErrorAlert message={error} />
-      </CardContent>
-    </CardRoot>
+        <div className="flex flex-col gap-1.5">
+          <Label>Frame rate</Label>
+          <Select
+            disabled={state.recording !== null}
+            value={String(capture.fps)}
+            onValueChange={(value) => save({ fps: Number(value) as 30 | 60 })}
+            items={[
+              { value: '30', label: '30 fps (recommended)' },
+              { value: '60', label: '60 fps' }
+            ]}
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Encoder</Label>
+          <Select
+            disabled={state.recording !== null}
+            value={capture.encoder}
+            onValueChange={(value) => save({ encoder: value as EncoderId })}
+            items={ENCODERS}
+          />
+        </div>
+      </div>
+      <ErrorAlert message={error} />
+    </SetupSection>
   )
 }
 
@@ -271,10 +261,12 @@ const KIND_OPTIONS: { value: AudioSourceKind; label: string }[] = [
 
 function AudioCard({
   state,
-  save
+  save,
+  section
 }: {
   state: AppState
   save: (patch: Partial<CaptureConfig>) => void
+  section: SectionProps
 }): React.JSX.Element {
   const connected = state.obs.status === 'connected'
   const levels = useAudioLevels()
@@ -315,80 +307,84 @@ function AudioCard({
   )
 
   return (
-    <CardRoot>
-      <CardHeader>
-        <CardTitle>Audio</CardTitle>
-        <CardDescription>
+    <SetupSection
+      title="Audio"
+      description={
+        <>
           Each source has its own mute and volume, like in OBS. A typical setup: Aurora, your voice client and your
           microphone.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-5">
-        <AudioMixer
-          sources={shown}
-          levels={levels}
-          onMutedChange={(id, muted) => void run(() => window.api.setSourceMuted(id, muted))}
-          onVolumeChange={(id, volumeDb) => setDragVolume((current) => ({ ...current, [id]: volumeDb }))}
-          onVolumeCommit={(id, volumeDb) =>
-            void run(async () => {
-              await window.api.setSourceVolume(id, volumeDb)
-              setDragVolume(({ [id]: _, ...rest }) => rest)
-            })
-          }
-          onNotesMuteChange={(id, value) =>
-            save({ audioSources: sources.map((s) => (s.id === id ? { ...s, muteDuringNotes: value } : s)) })
-          }
-          onRemove={state.recording ? undefined : (id) => save({ audioSources: sources.filter((s) => s.id !== id) })}
-        />
+        </>
+      }
+      contentClassName="flex flex-col gap-5"
+      {...section}
+    >
+      <AudioMixer
+        sources={shown}
+        levels={levels}
+        onMutedChange={(id, muted) => void run(() => window.api.setSourceMuted(id, muted))}
+        onVolumeChange={(id, volumeDb) => setDragVolume((current) => ({ ...current, [id]: volumeDb }))}
+        onVolumeCommit={(id, volumeDb) =>
+          void run(async () => {
+            await window.api.setSourceVolume(id, volumeDb)
+            setDragVolume(({ [id]: _, ...rest }) => rest)
+          })
+        }
+        onNotesMuteChange={(id, value) =>
+          save({ audioSources: sources.map((s) => (s.id === id ? { ...s, muteDuringNotes: value } : s)) })
+        }
+        onRemove={state.recording ? undefined : (id) => save({ audioSources: sources.filter((s) => s.id !== id) })}
+      />
 
-        {!state.recording && (
-          <div className="grid grid-cols-[14rem_1fr_auto_auto] items-end gap-3 border-t border-border pt-4">
-            <div className="flex flex-col gap-1.5">
-              <Label>Source type</Label>
-              <Select
-                disabled={!connected}
-                value={kind}
-                onValueChange={(value) => setKind(value as AudioSourceKind)}
-                items={KIND_OPTIONS}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>{kind === 'application' ? 'Application' : 'Device'}</Label>
-              <Select
-                disabled={!connected}
-                placeholder={
-                  !connected
-                    ? 'Connect to OBS first'
-                    : kind === 'application'
-                      ? 'Choose a running application'
-                      : 'Choose a device'
-                }
-                value={target}
-                onValueChange={setTarget}
-                items={targets}
-              />
-            </div>
-            <Button variant="outline" size="icon" aria-label="Refresh list" disabled={!connected} onClick={loadTargets}>
-              <RefreshCw className="size-4" aria-hidden />
-            </Button>
-            <Button disabled={!connected || !target} onClick={add}>
-              <Plus className="size-4" aria-hidden />
-              Add
-            </Button>
+      {!state.recording && (
+        <div className="grid grid-cols-[14rem_1fr_auto_auto] items-end gap-3 border-t border-border pt-4">
+          <div className="flex flex-col gap-1.5">
+            <Label>Source type</Label>
+            <Select
+              disabled={!connected}
+              value={kind}
+              onValueChange={(value) => setKind(value as AudioSourceKind)}
+              items={KIND_OPTIONS}
+            />
           </div>
-        )}
-        {kind === 'application' && !state.recording && (
-          <p className="-mt-2 text-xs text-muted-foreground">
-            Only running applications are listed: start Aurora and your voice client first.
-          </p>
-        )}
-        <ErrorAlert message={error} />
-      </CardContent>
-    </CardRoot>
+          <div className="flex flex-col gap-1.5">
+            <Label>{kind === 'application' ? 'Application' : 'Device'}</Label>
+            <Select
+              disabled={!connected}
+              placeholder={
+                !connected
+                  ? 'Connect to OBS first'
+                  : kind === 'application'
+                    ? 'Choose a running application'
+                    : 'Choose a device'
+              }
+              value={target}
+              onValueChange={setTarget}
+              items={targets}
+            />
+          </div>
+          <Button variant="outline" size="icon" aria-label="Refresh list" disabled={!connected} onClick={loadTargets}>
+            <RefreshCw className="size-4" aria-hidden />
+          </Button>
+          <Button disabled={!connected || !target} onClick={add}>
+            <Plus className="size-4" aria-hidden />
+            Add
+          </Button>
+        </div>
+      )}
+      {kind === 'application' && !state.recording && (
+        <p className="-mt-2 text-xs text-muted-foreground">
+          Only running applications are listed: start Aurora and your voice client first.
+        </p>
+      )}
+      <ErrorAlert message={error} />
+    </SetupSection>
   )
 }
 
 // --- Page ----------------------------------------------------------------------------
+
+const SECTIONS = ['obs', 'display', 'audio', 'markers', 'voiceNotes', 'companion'] as const
+type SectionId = (typeof SECTIONS)[number]
 
 export function SetupPage({ state }: { state: AppState }): React.JSX.Element {
   const [error, run] = useAction()
@@ -397,14 +393,28 @@ export function SetupPage({ state }: { state: AppState }): React.JSX.Element {
     [run, state.capture]
   )
 
+  const sections = useCollapsedSections()
+  const section = (id: SectionId): SectionProps => ({ open: sections.isOpen(id), onToggle: () => sections.toggle(id) })
+  const allOpen = SECTIONS.every((id) => sections.isOpen(id))
+
   return (
     <div className="flex flex-col gap-6">
-      <ObsConnectionCard state={state} />
-      <DisplayCard state={state} save={save} />
-      <AudioCard state={state} save={save} />
-      <MarkersCard settings={state.markerSettings} />
-      <VoiceNotesCard state={state} />
-      <CompanionCard state={state} settings={state.companionSettings} />
+      <div className="-mb-3 flex justify-end">
+        <Button variant="ghost" size="sm" onClick={() => sections.setAll(allOpen ? [...SECTIONS] : null)}>
+          {allOpen ? (
+            <ChevronsDownUp className="size-4" aria-hidden />
+          ) : (
+            <ChevronsUpDown className="size-4" aria-hidden />
+          )}
+          {allOpen ? 'Collapse all' : 'Expand all'}
+        </Button>
+      </div>
+      <ObsConnectionCard state={state} section={section('obs')} />
+      <DisplayCard state={state} save={save} section={section('display')} />
+      <AudioCard state={state} save={save} section={section('audio')} />
+      <MarkersCard settings={state.markerSettings} section={section('markers')} />
+      <VoiceNotesCard state={state} section={section('voiceNotes')} />
+      <CompanionCard state={state} settings={state.companionSettings} section={section('companion')} />
       <ErrorAlert message={error} />
     </div>
   )

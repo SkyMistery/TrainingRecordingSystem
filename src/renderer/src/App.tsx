@@ -31,6 +31,7 @@ export function App(): React.JSX.Element {
         obsStatus={state?.obs.status ?? 'disconnected'}
         themePreference={preference}
         onThemeChange={setPreference}
+        companion={state ? { info: state.companion, settings: state.companionSettings } : null}
       />
       <main className="flex-1 overflow-auto">
         {/* The review player uses the whole width: the recording is Full HD. */}

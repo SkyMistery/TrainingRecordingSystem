@@ -1,5 +1,8 @@
-import { Monitor, Moon, Sun } from 'lucide-react'
-import type { ObsStatus } from '@shared/types'
+import { useState } from 'react'
+import { Alert, Dialog, Switch } from '@ivao/atmosphere-react'
+import { CircleAlert, Monitor, Moon, QrCode, ShieldAlert, Sun } from 'lucide-react'
+import type { CompanionInfo, CompanionSettings, ObsStatus } from '@shared/types'
+import { CompanionPairing } from './CompanionCard'
 import type { ThemePreference } from '@shared/theme'
 
 export type Page = 'sessions' | 'setup'
@@ -36,6 +39,8 @@ interface HeaderProps {
   obsStatus: ObsStatus
   themePreference: ThemePreference
   onThemeChange: (preference: ThemePreference) => void
+  /** Shown once the app state is known and the Companion is enabled. */
+  companion: { info: CompanionInfo; settings: CompanionSettings } | null
 }
 
 function Segmented<T extends string>({
@@ -76,6 +81,50 @@ function Segmented<T extends string>({
   )
 }
 
+/** The pairing QR code, one click away from any page. */
+function CompanionButton({ info, settings }: { info: CompanionInfo; settings: CompanionSettings }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={setOpen}
+      title="Pair a tablet or phone"
+      description="Open the Companion on another device: notes, transcriptions and player controls."
+      trigger={
+        <button
+          className="flex h-7 items-center gap-1.5 rounded-sm bg-white/10 px-3 text-xs font-medium text-white/80 hover:text-white"
+          aria-label="Companion QR code"
+        >
+          <QrCode className="size-3.5" aria-hidden />
+          {info.clients === 0 ? 'Companion' : `Companion · ${info.clients}`}
+        </button>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <label className="flex items-center gap-3 text-sm">
+          <Switch
+            checked={settings.lan}
+            onCheckedChange={(lan) => void window.api.saveCompanionSettings({ ...settings, lan })}
+          />
+          Allow a tablet or phone on the same network
+        </label>
+        {settings.lan && <CompanionPairing info={info} />}
+        {settings.lan && info.publicNetwork && (
+          <Alert
+            variant="destructive"
+            Icon={ShieldAlert}
+            title="Your network is set to Public"
+            description="Windows blocks tablets from connecting on Public networks. Set the network profile to Private (see Setup → Companion)."
+          />
+        )}
+        {info.error && (
+          <Alert variant="destructive" Icon={CircleAlert} title="Companion not running" description={info.error} />
+        )}
+      </div>
+    </Dialog>
+  )
+}
+
 export function Header(props: HeaderProps): React.JSX.Element {
   return (
     <header className="flex items-center justify-between gap-4 bg-atmos-700 px-4 py-3 text-white dark:bg-fuselage-800">
@@ -89,6 +138,7 @@ export function Header(props: HeaderProps): React.JSX.Element {
         )}
       </div>
       <div className="flex items-center gap-4">
+        {props.companion?.settings.enabled && <CompanionButton {...props.companion} />}
         <span className="flex items-center gap-2 text-xs text-white/80">
           <span className={`size-2 rounded-full ${OBS_DOT[props.obsStatus]}`} aria-hidden />
           {OBS_LABEL[props.obsStatus]}

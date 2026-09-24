@@ -6,6 +6,9 @@ everything during the debriefing — with your notes kept on a separate screen.
 
 ## 1. First setup
 
+Each Setup section can be collapsed by clicking its title (**Collapse all** /
+**Expand all** at the top); the app remembers which ones you closed.
+
 ### OBS Studio
 
 TRS records through [OBS Studio](https://obsproject.com/) 30.2 or later.
@@ -114,6 +117,9 @@ and buttons to adjust a marker to the current position ("Start at / End at").
 - **Tablet or phone**: Setup → Companion → **Allow a tablet or phone on the
   same network**, then scan the QR code. The device stays paired; next time
   open the same address. **New pairing code** unpairs every device.
+- The **Companion** button in the top bar (shown while the Companion is
+  enabled) opens the QR code from any page, with the count of connected
+  devices.
 
 During a recording the Companion also offers Marker, Range and Hold-to-dictate
 buttons (the PC's microphone records the note).
