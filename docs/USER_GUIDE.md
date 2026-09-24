@@ -6,6 +6,10 @@ everything during the debriefing — with your notes kept on a separate screen.
 
 ## 1. First setup
 
+Until everything is set up, the Sessions page shows a **Before your first
+session** checklist; **Hide this list** removes it. **Guide** in the top bar
+opens this guide.
+
 Each Setup section can be collapsed by clicking its title (**Collapse all** /
 **Expand all** at the top); the app remembers which ones you closed.
 
@@ -87,7 +91,12 @@ Transcription runs on your PC: nothing is sent online.
 3. **Stop recording**. The session folder contains `recording.mp4`,
    `session.json`, `screenshots/` and `notes/`.
 
-Sessions are saved in `Documents\IVAO TRS\Sessions`.
+Sessions are saved in `Documents\IVAO TRS\Sessions`; change it in **Setup →
+Sessions folder**. Existing sessions stay where they are: move their folders
+into the new one if you want them in the list.
+
+While recording, the status window also shows how many voice notes are
+waiting to be transcribed.
 
 ## 3. Debriefing
 
@@ -145,3 +154,10 @@ In Review (from the notes window or a tablet) you can change categories, edit
 transcriptions (click the text), transcribe again, delete notes or markers,
 and move a marker or a range's start/end to the current position. Changes are
 saved immediately.
+
+From the **⋯** menu of a session in the list:
+
+- **Transcribe voice notes again** — every note of the session, e.g. after
+  downloading a better model. Text you edited by hand is kept.
+- **Delete session…** — moves the session folder (recording, screenshots,
+  notes) to the Windows Recycle Bin; restore it from there if needed.

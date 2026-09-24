@@ -180,6 +180,7 @@ export interface SessionSummary {
   durationMs: number | null
   hasRecording: boolean
   markerCount: number
+  noteCount: number
 }
 
 export interface RecordingState {
@@ -206,6 +207,8 @@ export interface AppState {
   review: ReviewState | null
   companion: CompanionInfo
   companionSettings: CompanionSettings
+  /** Where new sessions are saved and the sessions list is read from. */
+  sessionsDir: string
   /** Why voice notes can't be recorded right now (microphone problem), if anything. */
   microphoneError: string | null
   busy: boolean

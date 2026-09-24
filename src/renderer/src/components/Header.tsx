@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { Alert, Dialog, Switch } from '@ivao/atmosphere-react'
-import { CircleAlert, Monitor, Moon, QrCode, ShieldAlert, Sun } from 'lucide-react'
+import { BookOpen, CircleAlert, Monitor, Moon, QrCode, ShieldAlert, Sun } from 'lucide-react'
 import type { CompanionInfo, CompanionSettings, ObsStatus } from '@shared/types'
 import { CompanionPairing } from './CompanionCard'
 import type { ThemePreference } from '@shared/theme'
 
 export type Page = 'sessions' | 'setup'
+
+const USER_GUIDE_URL = 'https://github.com/SkyMistery/TrainingRecordingSystem/blob/main/docs/USER_GUIDE.md'
 
 const THEME_OPTIONS: { value: ThemePreference; label: string; Icon: typeof Sun }[] = [
   { value: 'day', label: 'Day', Icon: Sun },
@@ -138,6 +140,15 @@ export function Header(props: HeaderProps): React.JSX.Element {
         )}
       </div>
       <div className="flex items-center gap-4">
+        <a
+          href={USER_GUIDE_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="flex h-7 items-center gap-1.5 rounded-sm px-2 text-xs font-medium text-white/80 hover:text-white"
+        >
+          <BookOpen className="size-3.5" aria-hidden />
+          Guide
+        </a>
         {props.companion?.settings.enabled && <CompanionButton {...props.companion} />}
         <span className="flex items-center gap-2 text-xs text-white/80">
           <span className={`size-2 rounded-full ${OBS_DOT[props.obsStatus]}`} aria-hidden />

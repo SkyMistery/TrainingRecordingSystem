@@ -36,8 +36,8 @@ publishes). Check that only one release exists for the tag.
 
 - Typecheck + build after every change; format with Prettier.
 - tests/e2e/*.cjs drive the real app via CDP (see tests/e2e/README.md). Run
-  the relevant one after changing behaviour. `review.cjs` and `mic.cjs` use an
-  isolated `--user-data-dir` and their own ports, so they don't disturb the
+  the relevant one after changing behaviour. `review.cjs`, `sessions.cjs` and
+  `mic.cjs` use an isolated `--user-data-dir` and their own ports, so they don't disturb the
   trainer's running app.
 - For UI screenshots, render the built renderer in an Electron window with
   mocked IPC handlers; hidden windows may not repaint after state changes, so

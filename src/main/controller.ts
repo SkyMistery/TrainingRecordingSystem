@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, rm, unlink, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type {
   AppState,
   CompanionSettings,
@@ -140,6 +140,7 @@ export class Controller {
       capture: settings.capture,
       markerSettings: settings.markers,
       companionSettings: settings.companion,
+      sessionsDir: settings.sessionsDir,
       microphoneError: null,
       noteSettings: settings.notes,
       transcription: this.transcriptionState(),
@@ -252,6 +253,9 @@ export class Controller {
       await shell.openPath(target)
     })
     handle('sessions:defaults', () => ({ trainerVid: getSettings().trainerVid }))
+    handle('sessions:chooseFolder', () => this.chooseSessionsFolder())
+    handle('session:delete', (folderName: string) => this.deleteSession(folderName))
+    handle('session:retranscribe', (folderName: string) => this.retranscribeSession(folderName))
     handle('session:start', (metadata: SessionMetadata) => this.startSession(metadata))
     handle('session:stop', () => this.stopSession())
 
@@ -382,6 +386,57 @@ export class Controller {
     this.active = null
     this.patch({ recording: null })
     this.broadcast('sessions:changed', null)
+  }
+
+  /** New sessions go to the chosen folder; existing ones stay where they are (move them by hand). */
+  private async chooseSessionsFolder(): Promise<void> {
+    if (this.active) throw new Error('Stop the recording before changing the sessions folder')
+    if (this.state.review) throw new Error('Close the review before changing the sessions folder')
+    const window = BrowserWindow.getFocusedWindow()
+    const options: Electron.OpenDialogOptions = {
+      title: 'Choose the sessions folder',
+      defaultPath: getSettings().sessionsDir,
+      properties: ['openDirectory', 'createDirectory']
+    }
+    const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+    const chosen = result.filePaths[0]
+    if (result.canceled || !chosen) return
+    await updateSettings({ sessionsDir: chosen })
+    this.patch({ sessionsDir: chosen })
+    this.broadcast('sessions:changed', null)
+    void this.resumeTranscriptions()
+  }
+
+  /** Moves the session folder to the Recycle Bin, so a mistake can be undone from Windows. */
+  private async deleteSession(folderName: string): Promise<void> {
+    const folder = this.sessionFolder(folderName)
+    if (this.active?.folder === folder) throw new Error('This session is being recorded')
+    if (this.state.review?.folderName === folderName) throw new Error('Close the review of this session first')
+    if (this.transcriber.forget(folder)) {
+      throw new Error('A voice note of this session is being transcribed: try again in a few seconds')
+    }
+    try {
+      await shell.trashItem(folder)
+    } catch (error) {
+      console.error('Could not delete the session', error)
+      throw new Error('Could not move the session to the Recycle Bin. Close any program using its files and try again.')
+    }
+    this.broadcast('sessions:changed', null)
+  }
+
+  /** Transcribes every voice note of a session again, e.g. after downloading a better model. */
+  private async retranscribeSession(folderName: string): Promise<void> {
+    const folder = this.sessionFolder(folderName)
+    const noteIds: string[] = []
+    await this.editSession(folderName, (session) => {
+      for (const marker of session.markers) {
+        for (const note of marker.notes) {
+          note.status = 'pending'
+          noteIds.push(note.id)
+        }
+      }
+    })
+    for (const noteId of noteIds) this.transcriber.enqueue(folder, noteId)
   }
 
   private publishRecording(): void {

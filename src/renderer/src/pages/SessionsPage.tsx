@@ -8,6 +8,7 @@ import {
   CardRoot,
   CardTitle,
   Dialog,
+  DropdownMenu,
   Input,
   Label,
   TableBody,
@@ -17,8 +18,9 @@ import {
   TableRoot,
   TableRow
 } from '@ivao/atmosphere-react'
-import { Circle, CircleAlert, FolderOpen, Play, Settings2 } from 'lucide-react'
+import { Circle, CircleAlert, Ellipsis, FolderOpen, Play, RefreshCw, Settings2, Trash2 } from 'lucide-react'
 import type { AppState, SessionMetadata, SessionSummary } from '@shared/types'
+import { FirstRunChecklist, useChecklist } from '../components/FirstRunChecklist'
 import { formatDuration, todayIso } from '../format'
 
 const TRAINING_TYPES = ['Training', 'Exam', 'Checkout', 'Assessment']
@@ -123,10 +125,23 @@ function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStart
 export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSetup: () => void }): React.JSX.Element {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [reviewError, setReviewError] = useState<string | null>(null)
-  const openReview = (folderName: string): void => {
-    setReviewError(null)
-    window.api.openReview(folderName).catch((e: unknown) => setReviewError(e instanceof Error ? e.message : String(e)))
+  const [listError, setListError] = useState<{ title: string; message: string } | null>(null)
+  const [toDelete, setToDelete] = useState<SessionSummary | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const checklist = useChecklist(state)
+
+  const act = (title: string, action: () => Promise<void>): Promise<void> => {
+    setListError(null)
+    return action().catch((e: unknown) => setListError({ title, message: e instanceof Error ? e.message : String(e) }))
+  }
+  const openReview = (folderName: string): void =>
+    void act('Could not open the session', () => window.api.openReview(folderName))
+  const confirmDelete = async (): Promise<void> => {
+    if (!toDelete) return
+    setDeleting(true)
+    await act('Could not delete the session', () => window.api.deleteSession(toDelete.folderName))
+    setDeleting(false)
+    setToDelete(null)
   }
 
   useEffect(() => {
@@ -147,16 +162,20 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
           <CardDescription>Record the Aurora screen, mark significant moments and dictate voice notes.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          {!ready && (
-            <Alert
-              Icon={Settings2}
-              title={obsReady ? 'Choose the monitor to record' : 'Connect to OBS'}
-              description={
-                obsReady
-                  ? 'Open Setup and choose the monitor where Aurora runs.'
-                  : 'Start OBS and connect to it from Setup before recording.'
-              }
-            />
+          {checklist.visible ? (
+            <FirstRunChecklist steps={checklist.steps} onOpenSetup={onOpenSetup} onDismiss={checklist.dismiss} />
+          ) : (
+            !ready && (
+              <Alert
+                Icon={Settings2}
+                title={obsReady ? 'Choose the monitor to record' : 'Connect to OBS'}
+                description={
+                  obsReady
+                    ? 'Open Setup and choose the monitor where Aurora runs.'
+                    : 'Start OBS and connect to it from Setup before recording.'
+                }
+              />
+            )
           )}
           <div className="flex gap-3">
             <Dialog
@@ -173,7 +192,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
             >
               <NewSessionForm onCancel={() => setDialogOpen(false)} onStarted={() => setDialogOpen(false)} />
             </Dialog>
-            {!ready && (
+            {!ready && !checklist.visible && (
               <Button variant="outline" onClick={onOpenSetup}>
                 <Settings2 className="size-4" aria-hidden />
                 Open Setup
@@ -195,13 +214,8 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
           </Button>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          {reviewError && (
-            <Alert
-              variant="destructive"
-              Icon={CircleAlert}
-              title="Could not open the session"
-              description={reviewError}
-            />
+          {listError && (
+            <Alert variant="destructive" Icon={CircleAlert} title={listError.title} description={listError.message} />
           )}
           {sessions.length === 0 ? (
             <p className="text-sm text-muted-foreground">No sessions yet.</p>
@@ -252,6 +266,34 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
                         <FolderOpen className="size-4" aria-hidden />
                         Files
                       </Button>
+                      <DropdownMenu
+                        trigger={
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="More actions"
+                            disabled={state.recording !== null}
+                          >
+                            <Ellipsis className="size-4" aria-hidden />
+                          </Button>
+                        }
+                        items={[
+                          {
+                            label: 'Transcribe voice notes again',
+                            icon: <RefreshCw className="size-4" aria-hidden />,
+                            disabled: session.noteCount === 0,
+                            onSelect: () =>
+                              void act('Could not transcribe the notes', () =>
+                                window.api.retranscribeSession(session.folderName)
+                              )
+                          },
+                          {
+                            label: 'Delete session…',
+                            icon: <Trash2 className="size-4" aria-hidden />,
+                            onSelect: () => setToDelete(session)
+                          }
+                        ]}
+                      />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -260,6 +302,32 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
           )}
         </CardContent>
       </CardRoot>
+
+      <Dialog
+        open={toDelete !== null}
+        onOpenChange={(open) => !open && !deleting && setToDelete(null)}
+        title="Delete this session?"
+        description="The recording, screenshots and voice notes go to the Windows Recycle Bin: restore the folder from there if you change your mind."
+      >
+        {toDelete && (
+          <div className="flex flex-col gap-4">
+            <p className="text-sm">
+              {toDelete.metadata.date} · {toDelete.metadata.traineeVid}
+              {toDelete.metadata.traineeName && ` · ${toDelete.metadata.traineeName}`} ·{' '}
+              <span className="font-mono">{toDelete.metadata.position}</span>
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" disabled={deleting} onClick={() => setToDelete(null)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" isLoading={deleting} onClick={() => void confirmDelete()}>
+                <Trash2 className="size-4" aria-hidden />
+                Delete
+              </Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
     </div>
   )
 }

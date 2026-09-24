@@ -53,8 +53,11 @@ export function StatusView(): React.JSX.Element {
         <span className="font-mono text-2xl font-medium tabular-nums">
           {formatDuration(recording.elapsedMs + (now - recording.sampledAt))}
         </span>
-        <span className="ml-auto text-sm text-muted-foreground">
+        <span className="ml-auto text-right text-sm leading-tight text-muted-foreground">
           {recording.markers.length} marker{recording.markers.length === 1 ? '' : 's'}
+          {state.transcription.queued > 0 && (
+            <span className="block text-xs">{state.transcription.queued} to transcribe</span>
+          )}
         </span>
       </div>
       <div className="flex h-5 items-center gap-2 truncate text-sm">

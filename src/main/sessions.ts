@@ -100,7 +100,8 @@ export async function listSessions(root: string): Promise<SessionSummary[]> {
         metadata: session.metadata,
         durationMs: session.recording?.durationMs ?? null,
         hasRecording: Boolean(session.recording?.file),
-        markerCount: session.markers?.length ?? 0
+        markerCount: session.markers?.length ?? 0,
+        noteCount: session.markers.reduce((sum, marker) => sum + marker.notes.length, 0)
       })
     } catch {
       // Not a session folder.

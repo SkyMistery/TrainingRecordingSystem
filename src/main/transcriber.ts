@@ -55,6 +55,8 @@ function cleanTranscript(output: string): string {
 export class Transcriber {
   private readonly queue: Job[] = []
   private running = false
+  /** Session folder of the note being transcribed right now. */
+  private currentFolder: string | null = null
   private download: ModelDownload | null = null
   private downloadAbort: AbortController | null = null
   downloadError: string | null = null
@@ -100,6 +102,14 @@ export class Transcriber {
     this.queue.push({ folder, noteId })
     this.events.stateChanged()
     void this.process()
+  }
+
+  /** Drops the queued notes of a session; true if one of its notes is being transcribed right now. */
+  forget(folder: string): boolean {
+    const before = this.queue.length
+    this.queue.splice(0, this.queue.length, ...this.queue.filter((job) => job.folder !== folder))
+    if (this.queue.length !== before) this.events.stateChanged()
+    return this.currentFolder === folder
   }
 
   /** Re-queues notes left pending (e.g. the app closed mid-queue) or waiting for a model. */
@@ -184,6 +194,7 @@ export class Transcriber {
           deferred.push(job)
           continue
         }
+        this.currentFolder = job.folder
         try {
           await this.setStatus(job.folder, job.noteId, { status: 'transcribing' })
           const session = await this.store.update(job.folder, () => undefined)
@@ -194,6 +205,8 @@ export class Transcriber {
         } catch (error) {
           console.error('Transcription failed', error)
           await this.setStatus(job.folder, job.noteId, { status: 'failed' }).catch(() => undefined)
+        } finally {
+          this.currentFolder = null
         }
       }
       // Waiting for a model: they run as soon as it is downloaded.

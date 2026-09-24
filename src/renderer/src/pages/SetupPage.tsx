@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Alert, Button, Input, Label, Select } from '@ivao/atmosphere-react'
-import { ChevronsDownUp, ChevronsUpDown, CircleAlert, Plug, Plus, RefreshCw } from 'lucide-react'
+import {
+  ChevronsDownUp,
+  ChevronsUpDown,
+  CircleAlert,
+  FolderInput,
+  FolderOpen,
+  Plug,
+  Plus,
+  RefreshCw
+} from 'lucide-react'
 import type {
   AppState,
   AudioSourceConfig,
@@ -381,9 +390,42 @@ function AudioCard({
   )
 }
 
+// --- Sessions folder -----------------------------------------------------------------
+
+function SessionsFolderCard({ state, section }: { state: AppState; section: SectionProps }): React.JSX.Element {
+  const [error, run] = useAction()
+  return (
+    <SetupSection
+      title="Sessions folder"
+      description="Where recordings, screenshots and voice notes are saved. Changing it doesn’t move existing sessions: move their folders yourself if you want them in the list."
+      contentClassName="flex flex-col gap-4"
+      {...section}
+    >
+      <code className="select-text break-all rounded-sm bg-fuselage-100 p-2 font-mono text-xs dark:bg-fuselage-800">
+        {state.sessionsDir}
+      </code>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          disabled={state.recording !== null}
+          onClick={() => void run(() => window.api.chooseSessionsFolder())}
+        >
+          <FolderInput className="size-4" aria-hidden />
+          Change…
+        </Button>
+        <Button variant="ghost" onClick={() => void run(() => window.api.openSessionsFolder())}>
+          <FolderOpen className="size-4" aria-hidden />
+          Open
+        </Button>
+      </div>
+      <ErrorAlert message={error} />
+    </SetupSection>
+  )
+}
+
 // --- Page ----------------------------------------------------------------------------
 
-const SECTIONS = ['obs', 'display', 'audio', 'markers', 'voiceNotes', 'companion'] as const
+const SECTIONS = ['obs', 'display', 'audio', 'markers', 'voiceNotes', 'companion', 'sessionsFolder'] as const
 type SectionId = (typeof SECTIONS)[number]
 
 export function SetupPage({ state }: { state: AppState }): React.JSX.Element {
@@ -415,6 +457,7 @@ export function SetupPage({ state }: { state: AppState }): React.JSX.Element {
       <MarkersCard settings={state.markerSettings} section={section('markers')} />
       <VoiceNotesCard state={state} section={section('voiceNotes')} />
       <CompanionCard state={state} settings={state.companionSettings} section={section('companion')} />
+      <SessionsFolderCard state={state} section={section('sessionsFolder')} />
       <ErrorAlert message={error} />
     </div>
   )

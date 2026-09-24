@@ -28,7 +28,7 @@ Status (2026-09-24):
 | M2 Markers | done — v0.3.0 |
 | M3 Voice notes | done — v0.4.0 |
 | M4 Review and Companion | done — v0.5.0 |
-| M5 v1.0 | to do |
+| M5 v1.0 | in progress — app features done; icon, docs review and release to do |
 
 ### M0 — Foundations
 - Repository, MIT licence, documentation.
@@ -82,14 +82,13 @@ Status (2026-09-24):
   microphone lookup by name when its id changes.
 
 ### M5 — v1.0
-- Settings still missing: sessions folder location; delete a session from the
-  list; retranscribe notes of finished sessions from the sessions list.
+- Done: sessions folder setting; delete a session (to the Recycle Bin);
+  transcribe a session's notes again from the sessions list; transcription
+  queue in the status window; Guide link in the top bar; first-run checklist.
+  Also collapsible Setup sections and the Companion QR code in the top bar.
 - App icon (the IVAO logo only with IVAO PR approval — ask pr@ivao.aero).
 - Installer: firewall prompt names the app; code signing is not planned
   (SmartScreen warning documented).
-- Status window: show the transcription queue.
-- In-app link to the user guide; first-run checklist (OBS, display, audio,
-  microphone, model).
 - User guide (docs/USER_GUIDE.md) review, polish, v1.0 release.
 
 ### Known issues / notes
