@@ -16,6 +16,7 @@ it is not stored anywhere.
 | `mic.cjs`          | OBS password                                                                                | Voice notes with a stale microphone id (found by name) and with an unknown microphone (Windows default + warning), from the hotkey and the button                                                                                                                                                                                           |
 | `notes.cjs`        | OBS password; **close the app first**                                                       | Model download, push-to-talk, OBS mic muted while dictating, attach/new marker, tap ignored, transcription of `fixtures/note-en.wav`                                                                                                                                                                                                        |
 | `markers.cjs`      | OBS password; **close the app first**                                                       | Markers with pre-roll and screenshots, category hotkey, ranges, auto-repeat, media protocol                                                                                                                                                                                                                                                 |
+| `masks.cjs`        | **close the app first**; OBS idle                                                           | Hidden windows: a magenta test window is recorded without a rule, covered with one (also after it moves and with "every window of the program"), recorded again when the rule is off; the app's own windows aren't offered                                                                                                                  |
 | `obs-recovery.cjs` | OBS password; **close the app first**; OBS idle on your own profile                         | Profile switched by hand before Start (your profile's settings unchanged), pause in OBS vs marker times, app killed while recording → restarted app continues the session and adopts the recording, OBS back on your profile after quitting                                                                                                 |
 
 ```bash
@@ -25,7 +26,7 @@ node tests/e2e/mic.cjs <obs-websocket-password>
 
 `review.cjs`, `sessions.cjs`, `transcribe.cjs` and `mic.cjs` run in an isolated app instance (own settings folder
 in `%TEMP%`, other ports), so they can run while the app is open.
-`notes.cjs`, `markers.cjs` and `obs-recovery.cjs` use the real settings (restored at the end);
+`notes.cjs`, `markers.cjs`, `masks.cjs` and `obs-recovery.cjs` use the real settings (restored at the end);
 they create test sessions named "E2E test" — remove those folders afterwards.
 Every script stops its recording in a `finally` block; if a run is killed,
 check that OBS isn't left recording.

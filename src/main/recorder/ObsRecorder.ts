@@ -5,7 +5,8 @@ import type {
   AudioSourceKind,
   AudioTargetOption,
   CaptureConfig,
-  DisplayOption
+  DisplayOption,
+  MaskRect
 } from '../../shared/types'
 import type { Recorder, RecorderEvents } from './Recorder'
 
@@ -16,6 +17,12 @@ const SCENE = 'TRS Recording'
 const DISPLAY_INPUT = 'TRS Display'
 const AUDIO_PREFIX = 'TRS Audio '
 const PROBE_PREFIX = 'TRS Probe '
+/** Plain rectangles covering private windows, above the display. */
+const MASK_PREFIX = 'TRS Mask '
+/** Opaque dark grey, as OBS stores colours (0xAABBGGRR). */
+const MASK_COLOR = 0xff262626
+/** Masks are sent again now and then, in case they were changed or hidden in OBS. */
+const MASK_REFRESH_MS = 2_000
 
 const INPUT_KIND: Record<AudioSourceKind, string> = {
   application: 'wasapi_process_output_capture',
@@ -105,6 +112,14 @@ export class ObsRecorder implements Recorder {
   private stopping = false
   /** Operations that change OBS's setup run one at a time. */
   private queue: Promise<unknown> = Promise.resolve()
+  /** Canvas pixels per display pixel (the canvas is the display size, rounded to even). */
+  private canvasScale = { x: 1, y: 1 }
+  private wantedMasks: MaskRect[] = []
+  /** What OBS shows (JSON of the masks) and when it was sent; null when unknown. */
+  private shownMasks: { key: string; at: number } | null = null
+  /** Scene item id of each mask input, in order; null until read from the scene. */
+  private maskItems: number[] | null = null
+  private maskUpdate: Promise<void> | null = null
 
   constructor(
     private readonly connection: () => ObsConnectionParams,
@@ -175,6 +190,7 @@ export class ObsRecorder implements Recorder {
       throw error
     }
     this.connected = true
+    this.forgetMasks()
     try {
       const { obsVersion } = await this.call('GetVersion')
       if (!isVersionAtLeast(obsVersion, MIN_OBS_VERSION)) {
@@ -280,10 +296,20 @@ export class ObsRecorder implements Recorder {
     await this.call('SetInputVolume', { inputName: AUDIO_PREFIX + sourceId, inputVolumeDb: volumeDb })
   }
 
+  setMasks(masks: MaskRect[]): Promise<void> {
+    this.wantedMasks = masks
+    // One update at a time; it keeps going until OBS shows the latest masks.
+    this.maskUpdate ??= this.updateMasks().finally(() => {
+      this.maskUpdate = null
+    })
+    return this.maskUpdate
+  }
+
   async preview(width: number): Promise<string | null> {
     try {
+      // The scene, not the display: previews show the masks too.
       const { imageData } = await this.call('GetSourceScreenshot', {
-        sourceName: DISPLAY_INPUT,
+        sourceName: SCENE,
         imageFormat: 'jpg',
         imageWidth: width,
         imageCompressionQuality: 70
@@ -348,8 +374,9 @@ export class ObsRecorder implements Recorder {
   }
 
   async screenshot(filePath: string): Promise<void> {
+    // The scene, so private windows stay covered in screenshots.
     await this.call('SaveSourceScreenshot', {
-      sourceName: DISPLAY_INPUT,
+      sourceName: SCENE,
       imageFormat: 'png',
       imageFilePath: filePath
     })
@@ -499,6 +526,7 @@ export class ObsRecorder implements Recorder {
       }
     }
 
+    this.forgetMasks()
     const { scenes } = await this.call('GetSceneList')
     if (!scenes.some((scene) => scene.sceneName === SCENE)) {
       await this.call('CreateScene', { sceneName: SCENE })
@@ -613,8 +641,11 @@ export class ObsRecorder implements Recorder {
       inputName: DISPLAY_INPUT,
       inputSettings: { monitor_id: display.id, capture_cursor: true }
     })
+    this.canvasScale = { x: base.width / display.width, y: base.height / display.height }
     await this.ensureInScene(DISPLAY_INPUT)
     const { sceneItemId } = await this.call('GetSceneItemId', { sceneName: SCENE, sourceName: DISPLAY_INPUT })
+    // Below everything else, so the masks cover it (a display added back lands on top).
+    await this.call('SetSceneItemIndex', { sceneName: SCENE, sceneItemId, sceneItemIndex: 0 })
     await this.call('SetSceneItemTransform', {
       sceneName: SCENE,
       sceneItemId,
@@ -659,6 +690,76 @@ export class ObsRecorder implements Recorder {
       }
       await this.setMuted(source.id, source.muted)
       await this.setVolume(source.id, source.volumeDb)
+    }
+  }
+
+  private forgetMasks(): void {
+    this.shownMasks = null
+    this.maskItems = null
+  }
+
+  private async updateMasks(): Promise<void> {
+    for (;;) {
+      const masks = this.wantedMasks
+      const key = JSON.stringify(masks)
+      if (this.shownMasks?.key === key && Date.now() - this.shownMasks.at < MASK_REFRESH_MS) return
+      try {
+        await this.showMasks(masks)
+        this.shownMasks = { key, at: Date.now() }
+      } catch (error) {
+        // Read everything from OBS again next time (e.g. the scene collection was switched).
+        this.forgetMasks()
+        throw error
+      }
+    }
+  }
+
+  /** Moves one mask input over each rectangle, and hides the ones not needed. */
+  private async showMasks(masks: MaskRect[]): Promise<void> {
+    if (!this.maskItems) {
+      const { sceneItems } = await this.call('GetSceneItemList', { sceneName: SCENE })
+      const inScene = new Map(sceneItems.map((item) => [String(item.sourceName), Number(item.sceneItemId)]))
+      // Leftovers from an earlier run are reused (and hidden if not needed).
+      const found: number[] = []
+      for (let i = 1; inScene.has(MASK_PREFIX + i); i++) found.push(inScene.get(MASK_PREFIX + i)!)
+      this.maskItems = found
+    }
+    const items = this.maskItems
+    while (items.length < masks.length) {
+      const inputName = MASK_PREFIX + (items.length + 1)
+      // Created hidden, on top of the scene; an input by that name outside the scene is replaced.
+      const { sceneItemId } = await this.exclusive(async () => {
+        await this.removeInputIfExists(inputName)
+        return this.call('CreateInput', {
+          sceneName: SCENE,
+          inputName,
+          inputKind: 'color_source_v3',
+          inputSettings: { color: MASK_COLOR, width: 16, height: 16 },
+          sceneItemEnabled: false
+        })
+      })
+      items.push(sceneItemId)
+    }
+    const { x: scaleX, y: scaleY } = this.canvasScale
+    for (const [i, sceneItemId] of items.entries()) {
+      const mask = masks[i]
+      if (mask) {
+        await this.call('SetSceneItemTransform', {
+          sceneName: SCENE,
+          sceneItemId,
+          sceneItemTransform: {
+            positionX: Math.floor(mask.x * scaleX),
+            positionY: Math.floor(mask.y * scaleY),
+            alignment: 5, // top left
+            rotation: 0,
+            boundsType: 'OBS_BOUNDS_STRETCH',
+            boundsAlignment: 0,
+            boundsWidth: Math.max(1, Math.ceil(mask.width * scaleX)),
+            boundsHeight: Math.max(1, Math.ceil(mask.height * scaleY))
+          }
+        })
+      }
+      await this.call('SetSceneItemEnabled', { sceneName: SCENE, sceneItemId, sceneItemEnabled: Boolean(mask) })
     }
   }
 

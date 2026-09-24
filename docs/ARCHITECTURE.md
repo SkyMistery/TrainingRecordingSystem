@@ -50,6 +50,10 @@ Main process (src/main)
  ├─ notesWindow.ts     Companion page in a window on another monitor
  ├─ statusWindow.ts    always-on-top, non-focusable status window
  ├─ displays.ts        which Electron display OBS records
+ ├─ windowMasks.ts     WindowMasks: follows the hidden windows (every 50 ms)
+ │                     and moves the recorder's masks over them
+ ├─ windows.ts         Win32 through koffi (FFI): visible top-level windows
+ │                     with program, title and frame (physical pixels)
  ├─ media.ts           file serving with HTTP ranges (trs-media:// and /media)
  ├─ updater.ts         electron-updater: check at startup and every 6 h,
  │                     background download, state in AppState.update;
@@ -128,6 +132,19 @@ through `SessionStore`, which serialises writes per session.
   switches and StopRecord). Setup changes run one at a time; `configure`
   re-enters the app's profile/collection first if the trainer switched OBS
   away. Pauses in OBS freeze the marker clock.
+- Hidden windows (privacy): `WindowMasks` reads the frames of the windows
+  matching `capture.hiddenWindows` (program + exact title, or every window of
+  the program) with `DwmGetWindowAttribute(EXTENDED_FRAME_BOUNDS)`, makes them
+  relative to the recorded display ("@ x,y" in the OBS monitor name), adds a
+  margin and the union of the last three positions (a moving window stays
+  covered despite the capture delay), and calls `Recorder.setMasks`.
+  `ObsRecorder` keeps "TRS Mask N" colour sources above the display (which is
+  moved to the bottom of the scene), moves them with one
+  `SetSceneItemTransform` each (stretch bounds), hides the unused ones,
+  skips repeats and re-sends every 2 s. Previews and marker screenshots are
+  taken from the scene, not the display source, so they show the masks. The
+  native library is loaded lazily: if it fails, the app still starts and
+  Setup shows the problem.
 - Marker numbers and note file numbers are never reused within a session;
   note audio is written with `wx`, so no file is ever overwritten.
 - A category hotkey toggles that category on the latest marker.

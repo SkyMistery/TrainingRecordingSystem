@@ -63,7 +63,9 @@ const defaults = (): Settings => ({
     outputScale: 'native',
     fps: 30,
     encoder: 'x264',
-    audioSources: []
+    audioSources: [],
+    // Where the trainer chats with other controllers: private by default.
+    hiddenWindows: [{ id: 'aurora-com-box', exe: 'Aurora.exe', title: 'COM BOX', enabled: true }]
   },
   sessionsDir: join(app.getPath('documents'), 'IVAO TRS', 'Sessions'),
   trainerVid: '',

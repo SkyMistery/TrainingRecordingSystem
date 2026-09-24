@@ -70,6 +70,26 @@ is recorded, so Aurora's insets and floating windows are included. Choose
 **Downscale to 1080p** for 1440p/4K monitors if you want smaller files. The
 encoder is picked for your graphics card on first run.
 
+### Hidden windows
+
+Some windows on the recorded monitor are private: for example Aurora's
+**COM BOX**, where you chat with other controllers. **Setup → Hidden windows**
+covers them with a grey box in the recording and in screenshots, wherever you
+move them on that monitor. The COM BOX is hidden by default: turn its switch
+off if you want it recorded.
+
+To hide another window, open it, choose it in the list and click **Add**. A
+window is recognised by its program and title, so it stays hidden when you
+close and reopen it; with **Hide every window of this program** every window of
+that program is covered. Check the preview in **Setup → Display**.
+
+Good to know:
+- The box covers the window's area even when another window is on top of it.
+- While you drag a hidden window, the box follows it a moment later and is
+  larger than the window while it moves; move it before an important moment
+  rather than during it.
+- Windows on another monitor aren't recorded anyway.
+
 ### Audio
 
 Add the sources you want in the recording, like in OBS:

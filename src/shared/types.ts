@@ -42,12 +42,41 @@ export type EncoderId = 'x264' | 'nvenc' | 'qsv' | 'amd'
 
 export type OutputScale = 'native' | '1080p'
 
+/**
+ * A window kept out of the recording for privacy (e.g. Aurora's COM BOX, where
+ * the trainer chats with other controllers): it is covered wherever it is on the
+ * recorded monitor. Matched by program and window title.
+ */
+export interface HiddenWindowRule {
+  id: string
+  /** Executable file name, e.g. "Aurora.exe" (case-insensitive). */
+  exe: string
+  /** Exact window title; null covers every window of the program. */
+  title: string | null
+  enabled: boolean
+}
+
+/** An open window offered when adding a hidden window. */
+export interface WindowOption {
+  exe: string
+  title: string
+}
+
+/** Part of the recorded display to cover, in display pixels. */
+export interface MaskRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface CaptureConfig {
   display: DisplayOption | null
   outputScale: OutputScale
   fps: 30 | 60
   encoder: EncoderId
   audioSources: AudioSourceConfig[]
+  hiddenWindows: HiddenWindowRule[]
 }
 
 export interface SessionMetadata {
@@ -224,6 +253,8 @@ export interface AppState {
   companionSettings: CompanionSettings
   /** Where new sessions are saved and the sessions list is read from. */
   sessionsDir: string
+  /** Why hidden windows can't be covered right now, if anything. */
+  hiddenWindowsError: string | null
   /** Why voice notes can't be recorded right now (microphone problem), if anything. */
   microphoneError: string | null
   update: UpdateState | null

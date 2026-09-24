@@ -22,7 +22,8 @@ import type {
   SessionDetails,
   SessionMetadata,
   SessionSummary,
-  WhisperModelId
+  WhisperModelId,
+  WindowOption
 } from '../shared/types'
 
 /** Invokes a main-process handler and rethrows its error with a clean message. */
@@ -57,6 +58,7 @@ const api = {
 
   listDisplays: () => invoke<DisplayOption[]>('capture:listDisplays'),
   listAudioTargets: (kind: AudioSourceKind) => invoke<AudioTargetOption[]>('capture:listAudioTargets', kind),
+  listWindows: () => invoke<WindowOption[]>('capture:listWindows'),
   getPreview: () => invoke<string | null>('capture:preview'),
   saveCapture: (capture: Partial<CaptureConfig>) => invoke<void>('capture:save', capture),
   setSourceMuted: (sourceId: string, muted: boolean) => invoke<void>('capture:setMuted', sourceId, muted),

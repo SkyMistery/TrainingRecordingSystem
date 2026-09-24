@@ -11,8 +11,9 @@ Guidance for working on this repository (Training Recording System, TRS).
   for how it works, docs/USER_GUIDE.md for behaviour as the trainer sees it.
 - Product decisions already agreed (don't re-ask): OBS-based recording first
   (a native recorder may come later — keep the `Recorder` interface clean);
-  full-monitor capture; per-app audio like OBS; keyboard or mouse-button
-  hotkeys (no joystick); notes must **never** appear in the shareable review
+  full-monitor capture; private windows (Aurora COM BOX by default) covered
+  by masks that follow them (Setup → Hidden windows); per-app audio like OBS;
+  keyboard or mouse-button hotkeys (no joystick); notes must **never** appear in the shareable review
   window; Companion page for notes on a second screen/tablet; offline Whisper
   transcription; range markers yes, clip export no; debrief report is only a
   proposal (docs/FUTURE.md); UI follows brand.ivao.aero + Atmosphere with
@@ -86,10 +87,13 @@ v1.2.1+); users accept the terms again only when TERMS_VERSION changes.
   didn't start.
 - The OBS WebSocket password is never stored in the repo or in scripts: pass
   it as an argument only for the run.
-- OBS tests (markers, notes, obs-recovery: real settings, app closed; mic:
-  isolated) switch the trainer's OBS to "IVAO TRS" and back. Afterwards check
-  with a read-only status script that OBS is idle and back on the trainer's
-  profile, and remove the "E2E test" session folders they leave.
+- OBS tests (markers, notes, obs-recovery, masks: real settings, app closed;
+  mic: isolated) switch the trainer's OBS to "IVAO TRS" and back. Afterwards
+  check with a read-only status script that OBS is idle and back on the
+  trainer's profile (the OBS window title shows it), and remove the "E2E test"
+  session folders they leave. masks.cjs checks hidden windows with a magenta
+  test window: run it after touching windowMasks.ts, windows.ts or the masks
+  in ObsRecorder.
 - Test fixtures: `startSession(metadata, true)` (the consent confirmation), and
   isolated settings that click the UI need `termsAccepted` (the terms dialog
   covers the page otherwise).

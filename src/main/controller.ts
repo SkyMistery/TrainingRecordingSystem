@@ -53,6 +53,7 @@ import {
 import { decryptSecret, encryptSecret, getSettings, updateSettings } from './settings'
 import { hideStatusWindow, showStatusWindow } from './statusWindow'
 import { Transcriber } from './transcriber'
+import { WindowMasks } from './windowMasks'
 
 interface ActiveSession {
   folder: string
@@ -92,6 +93,7 @@ const RECONNECT_ATTEMPTS = 12
  */
 export class Controller {
   private readonly recorder: Recorder
+  private readonly windowMasks: WindowMasks
   private readonly hotkeys = new GlobalHotkeys()
   private active: ActiveSession | null = null
   private dictation: Dictation | null = null
@@ -187,6 +189,7 @@ export class Controller {
       markerSettings: settings.markers,
       companionSettings: settings.companion,
       sessionsDir: settings.sessionsDir,
+      hiddenWindowsError: null,
       microphoneError: null,
       noteSettings: settings.notes,
       transcription: this.transcriptionState(),
@@ -221,11 +224,17 @@ export class Controller {
           updateSettings({ obsPreviousWorkspace }).catch((error: unknown) => console.error(error))
       }
     )
+    this.windowMasks = new WindowMasks(
+      this.recorder,
+      () => this.state.capture,
+      (hiddenWindowsError) => this.patch({ hiddenWindowsError })
+    )
   }
 
   async init(): Promise<void> {
     await this.detectDefaultEncoder()
     this.registerIpc()
+    await this.windowMasks.start()
     this.hotkeys.on('down', (hotkey) => this.onHotkey(hotkey))
     this.hotkeys.on('up', (hotkey) => {
       if (this.dictation && sameHotkey(hotkey, getSettings().markers.hotkeys.voiceNote)) this.run(() => this.stopNote())
@@ -259,6 +268,7 @@ export class Controller {
     this.audio.destroy()
     this.transcriber.cancelDownload()
     await this.companion.stop().catch((error: unknown) => console.error('Could not stop the Companion', error))
+    this.windowMasks.stop()
     await this.recorder.disconnect().catch((error: unknown) => console.error('Could not restore OBS', error))
   }
 
@@ -301,6 +311,7 @@ export class Controller {
 
     handle('capture:listDisplays', () => this.requireObs().listDisplays())
     handle('capture:listAudioTargets', (kind: AudioSourceKind) => this.requireObs().listAudioTargets(kind))
+    handle('capture:listWindows', () => this.windowMasks.listWindows())
     handle('capture:preview', () => (this.recorder.isConnected() ? this.recorder.preview(640) : null))
     handle('capture:save', async (patch: Partial<CaptureConfig>) => {
       const capture: CaptureConfig = { ...this.state.capture, ...patch }

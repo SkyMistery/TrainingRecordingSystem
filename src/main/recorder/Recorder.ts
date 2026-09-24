@@ -1,4 +1,11 @@
-import type { AudioLevels, AudioSourceKind, AudioTargetOption, CaptureConfig, DisplayOption } from '../../shared/types'
+import type {
+  AudioLevels,
+  AudioSourceKind,
+  AudioTargetOption,
+  CaptureConfig,
+  DisplayOption,
+  MaskRect
+} from '../../shared/types'
 
 /**
  * A recording engine. OBS is the first implementation; a native engine can be
@@ -15,6 +22,12 @@ export interface Recorder {
   configure(config: CaptureConfig): Promise<void>
   setMuted(sourceId: string, muted: boolean): Promise<void>
   setVolume(sourceId: string, volumeDb: number): Promise<void>
+  /**
+   * Covers these parts of the captured display (private windows) in the
+   * recording, previews and screenshots; an empty list uncovers everything.
+   * Called often: repeating the same masks must be cheap.
+   */
+  setMasks(masks: MaskRect[]): Promise<void>
   /** Small JPEG of the captured display as a data URL, for previews. */
   preview(width: number): Promise<string | null>
 

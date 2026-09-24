@@ -22,6 +22,7 @@ import type {
 } from '@shared/types'
 import { AudioMixer } from '../components/AudioMixer'
 import { CompanionCard } from '../components/CompanionCard'
+import { HiddenWindowsCard } from '../components/HiddenWindowsCard'
 import { MarkersCard } from '../components/MarkersCard'
 import { SetupSection, useCollapsedSections, type SectionProps } from '../components/SetupSection'
 import { VoiceNotesCard } from '../components/VoiceNotesCard'
@@ -434,7 +435,16 @@ function SessionsFolderCard({ state, section }: { state: AppState; section: Sect
 
 // --- Page ----------------------------------------------------------------------------
 
-const SECTIONS = ['obs', 'display', 'audio', 'markers', 'voiceNotes', 'companion', 'sessionsFolder'] as const
+const SECTIONS = [
+  'obs',
+  'display',
+  'hiddenWindows',
+  'audio',
+  'markers',
+  'voiceNotes',
+  'companion',
+  'sessionsFolder'
+] as const
 type SectionId = (typeof SECTIONS)[number]
 
 export function SetupPage({ state }: { state: AppState }): React.JSX.Element {
@@ -460,6 +470,7 @@ export function SetupPage({ state }: { state: AppState }): React.JSX.Element {
       </div>
       <ObsConnectionCard state={state} section={section('obs')} />
       <DisplayCard state={state} save={save} section={section('display')} />
+      <HiddenWindowsCard state={state} save={save} section={section('hiddenWindows')} />
       <AudioCard state={state} save={save} section={section('audio')} />
       <MarkersCard settings={state.markerSettings} section={section('markers')} />
       <VoiceNotesCard state={state} section={section('voiceNotes')} />
