@@ -30,6 +30,10 @@ Status (2026-09-24):
 | M4 Review and Companion | done — v0.5.0 |
 | M5 v1.0 | done — v1.0.0 |
 | v1.1 feedback | done — v1.1.0: several categories per marker, folder names with trainee and session type, Training/Exam session type |
+| v1.2 feedback | done, **not released yet** (next: v1.2.0): connect to OBS from the top bar, edit a recorded session's details (folders renamed) |
+
+Next: collect feedback from other trainers on v1.1/v1.2, then possibly the
+native recorder without OBS (see [FUTURE.md](FUTURE.md)).
 
 ### M0 — Foundations
 - Repository, MIT licence, documentation.

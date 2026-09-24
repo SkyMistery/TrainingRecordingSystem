@@ -34,7 +34,11 @@ npm run dist        # installer
 
 Release: bump package.json version, commit, `git push`, then `git tag vX.Y.Z`
 and `git push origin vX.Y.Z` (the workflow creates a draft release, uploads,
-publishes). Check that only one release exists for the tag.
+publishes). Also update the ROADMAP status table and the README status
+line. Afterwards check that only one release exists for the tag (drafts
+included: `gh api repos/SkyMistery/TrainingRecordingSystem/releases`) and that
+its latest.yml sha512 matches the uploaded .exe. Deleting a duplicate draft
+needs the trainer's OK.
 
 ## Testing
 
@@ -43,9 +47,18 @@ publishes). Check that only one release exists for the tag.
   the relevant one after changing behaviour. `review.cjs`, `sessions.cjs` and
   `mic.cjs` use an isolated `--user-data-dir` and their own ports, so they don't disturb the
   trainer's running app.
-- For UI screenshots, render the built renderer in an Electron window with
-  mocked IPC handlers; hidden windows may not repaint after state changes, so
-  use a visible off-screen window (x: -4000) or capture right after load.
+- For UI screenshots, render the built renderer (out/renderer) in an Electron
+  window with a mocked preload. Use `webPreferences: { offscreen: true }` +
+  `capturePage()` (a visible window at x: -4000 gave blank pages or
+  UnknownVizError here). The mock must expose a **plain object** of functions
+  via contextBridge (a Proxy can't be cloned), including `getTheme`; wait
+  ~1 s after load before clicking, since state arrives asynchronously. Always
+  put an `app.exit` timeout in such scripts so they can't hang.
+- Don't wrap e2e scripts in a short `timeout`: review.cjs removes its session
+  copy at the end, and a killed run leaves "E2E test" folders behind.
+- sessions.cjs covers the sessions list (counts, retranscribe, categories,
+  delete, edit details) in an isolated instance with a sessions folder in
+  %TEMP% — run it after touching sessions.ts or the list actions.
 - The trainer is often running the app. Before closing it, check that OBS is
   not recording (obs-websocket `GetRecordStatus`, read-only) and close it
   gracefully (`CloseMainWindow`), never kill it. Never stop a recording you
@@ -76,3 +89,10 @@ publishes). Check that only one release exists for the tag.
   a profile reload.
 - Closing the main window must quit the app (the hidden microphone window
   keeps it alive otherwise), and quitting waits for the OBS profile restore.
+- Session folder names come from the metadata (see ARCHITECTURE "Session
+  folder"); anything that changes metadata must go through
+  `renameSessionFolder` so folders and screenshot paths stay consistent.
+- Never connect a test instance to the trainer's OBS: connecting switches
+  OBS to the "IVAO TRS" profile. Isolated tests use `obs.port: 1`.
+- In shell heredocs, long JS with nested quotes/backticks breaks: write edit
+  scripts to the scratchpad with the Write tool and run them with node.

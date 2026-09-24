@@ -25,8 +25,10 @@ Main process (src/main)
  ├─ recorder/          Recorder interface + ObsRecorder (own profile/scene
  │                     collection, display capture, per-app/desktop/mic
  │                     audio, hybrid MP4, clock synced with OBS, screenshots)
- ├─ sessions.ts        session folders, session.json (atomic writes),
- │                     SessionStore (serialised edits, live or on disk)
+ ├─ sessions.ts        session folders (naming, rename after edits),
+ │                     session.json (atomic writes, migrations in
+ │                     loadSession), SessionStore (serialised edits, live
+ │                     or on disk)
  ├─ hotkeys.ts         GlobalHotkeys (uiohook): down/up, no auto-repeat,
  │                     capture mode for binding keys
  ├─ audioWindow.ts     AudioCapture: hidden window keeping the mic open
@@ -43,6 +45,14 @@ Renderer (src/renderer) — one bundle, several entry points
  └─ companion.html     Companion page (served by CompanionServer)
 ```
 
+Shared renderer pieces worth knowing: `Header` (OBS status button that
+reconnects with the saved settings, Companion QR dialog, Guide link),
+`AppFooter` (credits + copyright on every page, also in the Companion),
+`SetupSection` (collapsible Setup cards, state in localStorage),
+`FirstRunChecklist`, `MarkerList` (also exports `markerColors`, `paint`,
+`CategoryChips`, `CategoryStripe` used by the timeline, review, status
+window and Companion).
+
 The main process owns all state and broadcasts `AppState` on every change.
 Windows and Companion clients are views: they render the state and send
 commands.
@@ -50,11 +60,21 @@ commands.
 ### One command API for every view
 
 `SessionCommands` (src/shared/types.ts) lists the session edits and live
-actions: add marker, toggle range, start/stop note, set category, set marker
+actions: add marker, toggle range, start/stop note, toggle a marker category
+(`toggleMarkerCategory`: a marker has `categoryIds: string[]`), set marker
 times, delete marker/note, set note text, retranscribe, player commands. The
 desktop windows send them over IPC (`window.api.command(name, ...args)`), the
 Companion over its WebSocket; both end in `Controller.execute`. The Companion
 may only send this allow-listed set (no settings, no start/stop recording).
+
+Sessions-list actions are IPC-only (not in `SessionCommands`, so never from
+the Companion): `session:updateDetails` (fix trainee VID/name, position,
+session type → folders renamed), `session:delete` (Recycle Bin via
+`shell.trashItem`), `session:retranscribe`, `sessions:chooseFolder`, and
+`obs:reconnect` (top bar). Delete and edit are refused while the session is
+recorded, reviewed or has a note being transcribed
+(`Transcriber.isTranscribing`); its queued jobs are dropped with `forget` and
+re-queued after a rename.
 
 Edits address a session by **folder name** (never a path); the controller
 resolves it inside the sessions folder and refuses anything else. Edits work
@@ -71,6 +91,7 @@ through `SessionStore`, which serialises writes per session.
   `SaveSourceScreenshot` (full-resolution PNG).
 - `finaliseSession`: renames OBS's file to `recording.mp4`, closes an open
   range at the end, saves.
+- A category hotkey toggles that category on the latest marker.
 - The trainer's OBS profile/collection is stored in settings
   (`obsPreviousWorkspace`) and restored on quit, also after a crash. TRS never
   switches profile while OBS records or streams.
@@ -112,15 +133,30 @@ transform with a native non-passive wheel listener.
 ## Session folder
 
 ```
-Documents\IVAO TRS\Sessions\2026-09-23_1930_123456_LIRF_APP\
+<sessions folder>\2026-09-24_123456_Mario-Rossi_LIRF_APP_Training\
  ├─ session.json      metadata, recording info, markers (with notes)
  ├─ recording.mp4     hybrid MP4, H.264
- ├─ screenshots\      m-0001.png …
+ ├─ 2026-09-24_123456_Mario-Rossi_LIRF_APP_Training_screen\   m-0001.png …
  └─ notes\            n-0001.wav …  (16 kHz mono)
 ```
 
+- The sessions folder defaults to `Documents\IVAO TRS\Sessions` and is a
+  setting (`sessionsDir`, Setup → Sessions folder).
+- Folder name: `<date>_<trainee VID>_<trainee name>_<position>_<session type>`
+  (`sessionFolderName`: accents stripped, other characters → `-`, empty parts
+  skipped, `-2`, `-3`… when taken). The screenshots folder is the session
+  name + `_screen` (`screenshotsDir`), so it can be shared on its own. Marker
+  screenshot paths are stored relative to the session folder.
+- "Session type" in the UI is `metadata.trainingType` in the data (Training
+  or Exam; older sessions may hold other values).
+- `renameSessionFolder` applies the naming again after "Edit details"; it
+  also moves v1.0-style sessions (time in the name, `screenshots/`) to the new
+  names and rewrites screenshot paths.
+- The list is sorted by date, then `createdAt` (names carry no time of day).
+
 `session.json` is `SessionFile` in src/shared/types.ts (`schemaVersion: 1`);
-`loadSession` fills fields added by later versions.
+`loadSession` fills fields added by later versions and migrates old ones
+(v1.0 `categoryId` → `categoryIds`).
 
 ## Build and release
 
@@ -130,3 +166,9 @@ Documents\IVAO TRS\Sessions\2026-09-23_1930_123456_LIRF_APP\
   Companion runs on phones), matching Tailwind v4/Atmosphere.
 - Release workflow: create a draft release with `gh`, electron-builder uploads
   into it (`releaseType: draft`), then publish — avoids duplicate releases.
+  GitHub once started the v1.1.0 workflow twice (two drafts, one left behind):
+  runs are now serialised with `concurrency` and a run exits early when the
+  release is already published.
+- The app icon is `build/icon.png` (512 px, rendered from the division
+  symbol); electron-builder makes the .ico. The executable's copyright comes
+  from `copyright` in electron-builder.yml.
