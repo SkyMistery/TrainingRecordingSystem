@@ -75,6 +75,11 @@ Fontsource under the SIL Open Font License. Transcription uses
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT) and Whisper
 models.
 
+## Credits
+
+Made by Carmine (704798) and the IVAO Italy Division. The app icon and logo
+are the IVAO Italy division symbol.
+
 ## Licence
 
 [MIT](LICENSE). Third-party components keep their own licences.

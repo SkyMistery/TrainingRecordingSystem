@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { AppFooter } from './components/AppFooter'
 import { Header, type Page } from './components/Header'
 import { useMarkerFeedbackSound } from './feedback'
 import { useAppState } from './hooks'
@@ -33,9 +34,9 @@ export function App(): React.JSX.Element {
         onThemeChange={setPreference}
         companion={state ? { info: state.companion, settings: state.companionSettings } : null}
       />
-      <main className="flex-1 overflow-auto">
+      <main className="flex flex-1 flex-col overflow-auto">
         {/* The review player uses the whole width: the recording is Full HD. */}
-        <div className={review ? 'px-6 py-4' : 'container max-w-5xl py-8'}>
+        <div className={review ? 'flex-1 px-6 py-4' : 'container max-w-5xl flex-1 py-8'}>
           {state &&
             (recording ? (
               <RecordingPage state={state} recording={recording} />
@@ -47,6 +48,7 @@ export function App(): React.JSX.Element {
               <SessionsPage state={state} onOpenSetup={() => setPage('setup')} />
             ))}
         </div>
+        <AppFooter version={version} />
       </main>
     </div>
   )

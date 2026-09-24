@@ -28,7 +28,7 @@ Status (2026-09-24):
 | M2 Markers | done — v0.3.0 |
 | M3 Voice notes | done — v0.4.0 |
 | M4 Review and Companion | done — v0.5.0 |
-| M5 v1.0 | in progress — app features done; icon, docs review and release to do |
+| M5 v1.0 | in progress — app features and icon done; docs review and release to do |
 
 ### M0 — Foundations
 - Repository, MIT licence, documentation.
@@ -86,9 +86,11 @@ Status (2026-09-24):
   transcribe a session's notes again from the sessions list; transcription
   queue in the status window; Guide link in the top bar; first-run checklist.
   Also collapsible Setup sections and the Companion QR code in the top bar.
-- App icon (the IVAO logo only with IVAO PR approval — ask pr@ivao.aero).
-- Installer: firewall prompt names the app; code signing is not planned
-  (SmartScreen warning documented).
+- Done: app icon and header logo from the IVAO Italy division symbol;
+  credits and copyright footer on every page.
+- Done: the executable is described as "Training Recording System" (the name
+  the firewall prompt shows). Code signing is not planned (SmartScreen warning
+  documented).
 - User guide (docs/USER_GUIDE.md) review, polish, v1.0 release.
 
 ### Known issues / notes

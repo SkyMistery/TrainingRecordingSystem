@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Alert, Dialog, Switch } from '@ivao/atmosphere-react'
 import { BookOpen, CircleAlert, Monitor, Moon, QrCode, ShieldAlert, Sun } from 'lucide-react'
 import type { CompanionInfo, CompanionSettings, ObsStatus } from '@shared/types'
+import symbol from '../assets/it-symbol-white.svg'
 import { CompanionPairing } from './CompanionCard'
 import type { ThemePreference } from '@shared/theme'
 
@@ -131,7 +132,8 @@ export function Header(props: HeaderProps): React.JSX.Element {
   return (
     <header className="flex items-center justify-between gap-4 bg-atmos-700 px-4 py-3 text-white dark:bg-fuselage-800">
       <div className="flex items-center gap-6">
-        <div className="flex items-baseline gap-3">
+        <div className="flex items-center gap-3">
+          <img src={symbol} alt="IVAO Italy" className="size-8" />
           <span className="font-head text-lg font-semibold">Training Recording System</span>
           {props.version && <span className="text-xs text-white/70">v{props.version}</span>}
         </div>

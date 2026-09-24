@@ -25,6 +25,8 @@ import { Timeline } from '../components/Timeline'
 import { formatDuration } from '../format'
 import { useNow } from '../hooks'
 import { useCompanionConnection, type ConnectionStatus } from './connection'
+import symbol from '../assets/it-symbol-white.svg'
+import { AppFooter } from '../components/AppFooter'
 
 /** Day/Night for the Companion page, remembered by this browser. */
 function useCompanionTheme(): [boolean, () => void] {
@@ -357,9 +359,12 @@ export function CompanionApp(): React.JSX.Element {
   }
 
   return (
-    <div className="min-h-full bg-body">
+    <div className="flex min-h-full flex-col bg-body">
       <header className="sticky top-0 z-10 flex items-center justify-between gap-3 bg-atmos-700 px-4 py-3 text-white dark:bg-fuselage-800">
-        <span className="font-head font-semibold">Trainer notes</span>
+        <span className="flex items-center gap-2 font-head font-semibold">
+          <img src={symbol} alt="IVAO Italy" className="size-7" />
+          Trainer notes
+        </span>
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1.5 text-xs text-white/80">
             <Circle
@@ -373,7 +378,7 @@ export function CompanionApp(): React.JSX.Element {
           </button>
         </div>
       </header>
-      <main className="mx-auto flex max-w-3xl flex-col gap-4 p-4">
+      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 p-4">
         {error && <Alert variant="destructive" Icon={CircleAlert} title="Something went wrong" description={error} />}
         {status === 'unpaired' ? (
           <Alert
@@ -393,6 +398,7 @@ export function CompanionApp(): React.JSX.Element {
           </p>
         )}
       </main>
+      <AppFooter />
     </div>
   )
 }
