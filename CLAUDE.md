@@ -46,7 +46,12 @@ publishes). Also update the ROADMAP status table and the README status
 line. Afterwards check that only one release exists for the tag (drafts
 included: `gh api repos/SkyMistery/TrainingRecordingSystem/releases`) and that
 its latest.yml sha512 matches the uploaded .exe. Deleting a duplicate draft
-needs the trainer's OK.
+needs the trainer's OK. The workflow itself refuses a tag that doesn't match
+package.json and publishes only after checking the assets and latest.yml; if
+a check stops it, the release stays a draft: verify it by hand and publish it
+through the API (`-F draft=false -f make_latest=true`) — never move a pushed
+tag. Installed apps show the update in the top bar ("Restart to update",
+v1.2.1+); users accept the terms again only when TERMS_VERSION changes.
 
 ## Testing
 
@@ -81,6 +86,13 @@ needs the trainer's OK.
   didn't start.
 - The OBS WebSocket password is never stored in the repo or in scripts: pass
   it as an argument only for the run.
+- OBS tests (markers, notes, obs-recovery: real settings, app closed; mic:
+  isolated) switch the trainer's OBS to "IVAO TRS" and back. Afterwards check
+  with a read-only status script that OBS is idle and back on the trainer's
+  profile, and remove the "E2E test" session folders they leave.
+- Test fixtures: `startSession(metadata, true)` (the consent confirmation), and
+  isolated settings that click the UI need `termsAccepted` (the terms dialog
+  covers the page otherwise).
 
 ## Gotchas learned the hard way
 
@@ -112,3 +124,13 @@ needs the trainer's OK.
   OBS to the "IVAO TRS" profile. Isolated tests use `obs.port: 1`.
 - In shell heredocs, long JS with nested quotes/backticks breaks: write edit
   scripts to the scratchpad with the Write tool and run them with node.
+- Prettier covers src, tests, scripts and .github only: never run it on docs/
+  or README (their tables aren't Prettier-formatted).
+- OBS reports a recording STOPPED a moment before its output is idle: wait
+  for idle before switching profiles (see `waitUntilIdle`).
+- whisper-cli reads its arguments in the ANSI code page: it runs in the models
+  folder with relative names (non-ASCII user or sessions paths otherwise fail).
+- electron-updater's `quitAndInstall` starts the installer at once: run the
+  app's shutdown (OBS restore) before calling it.
+- Atmosphere's `Dialog` always has a close button: a dialog that must not be
+  dismissed uses the `AlertDialog*` primitives.
