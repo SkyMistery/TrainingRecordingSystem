@@ -27,7 +27,7 @@ Status (2026-09-24):
 | M1 OBS and session setup | done — v0.2.0 |
 | M2 Markers | done — v0.3.0 |
 | M3 Voice notes | done — v0.4.0 |
-| M4 Review and Companion | implemented and tested by the trainer on PC and phone; **not released yet** (next: v0.5.0) |
+| M4 Review and Companion | done — v0.5.0 |
 | M5 v1.0 | to do |
 
 ### M0 — Foundations
