@@ -156,7 +156,9 @@ async function main() {
     // 5. Real speech through the transcription pipeline.
     const first = markers[0].notes[0]
     copyFileSync(TTS_WAV, join(folder, first.audio))
-    await evaluate(`window.api.retranscribeNote(${JSON.stringify(markers[0].id)}, ${JSON.stringify(first.id)})`)
+    await evaluate(
+      `window.api.command('retranscribeNote', ${JSON.stringify(state.recording.folderName)}, ${JSON.stringify(markers[0].id)}, ${JSON.stringify(first.id)})`
+    )
     for (let i = 0; i < 60; i++) {
       await sleep(1000)
       const note = (await getState()).recording.markers[0].notes[0]
@@ -187,15 +189,16 @@ async function main() {
   ws.close()
   const closing = Date.now()
   await new Promise((r) => {
-    app.on('exit', () => {
-      log('app exited by itself after', Date.now() - closing, 'ms')
-      r()
-    })
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       log('app did NOT exit: killing it')
       app.kill()
       r()
     }, 8000)
+    app.on('exit', () => {
+      clearTimeout(timer)
+      log('app exited by itself after', Date.now() - closing, 'ms')
+      r()
+    })
   })
   log('app closed; session folder', folder)
 }

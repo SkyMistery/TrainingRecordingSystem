@@ -42,6 +42,11 @@ const REQUEST_TIMEOUT_MS = 10_000
 /** Switching profile or scene collection makes OBS reload them. */
 const SWITCH_TIMEOUT_MS = 30_000
 const CONNECT_TIMEOUT_MS = 15_000
+/**
+ * OBS reports a recording as stopped a moment before its output is really
+ * idle; a profile switch (restoring the trainer's) needs it idle.
+ */
+const IDLE_WAIT_MS = 5_000
 
 const SLOW_REQUESTS = new Set<keyof OBSRequestTypes>([
   'SetCurrentProfile',
@@ -322,6 +327,7 @@ export class ObsRecorder implements Recorder {
       const { outputPath } = await this.call('StopRecord')
       const finalPath = await stopped
       this.setRecording(false)
+      await this.waitUntilIdle(IDLE_WAIT_MS)
       // A recording started from OBS itself must not land in this session's folder.
       if (outputDir)
         await this.call('SetRecordDirectory', { recordDirectory: dirname(outputDir) }).catch(() => undefined)
@@ -433,6 +439,16 @@ export class ObsRecorder implements Recorder {
     return record.outputActive || stream.outputActive || virtualCam.outputActive || replay.outputActive
   }
 
+  /** True once nothing is recording, streaming or using the scene; false if still busy after `ms`. */
+  private async waitUntilIdle(ms: number): Promise<boolean> {
+    const until = Date.now() + ms
+    while (await this.obsOutputActive()) {
+      if (Date.now() >= until) return false
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    return true
+  }
+
   /** Re-enters the app's workspace if the trainer switched OBS to another profile or collection. */
   private async ensureWorkspace(): Promise<void> {
     const [profiles, collections] = await Promise.all([
@@ -515,7 +531,8 @@ export class ObsRecorder implements Recorder {
   private async restoreWorkspace(): Promise<void> {
     const previous = this.workspace.get()
     if (!previous || this.recording) return
-    if (await this.obsOutputActive()) return
+    // Still busy after a few seconds: OBS is in use (e.g. streaming), leave it be.
+    if (!(await this.waitUntilIdle(IDLE_WAIT_MS))) return
     // The trainer may have renamed or deleted them in the meantime.
     const { sceneCollections } = await this.call('GetSceneCollectionList')
     const { profiles } = await this.call('GetProfileList')

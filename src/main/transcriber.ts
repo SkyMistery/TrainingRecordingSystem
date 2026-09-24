@@ -57,10 +57,22 @@ function findNote(session: SessionFile, noteId: string): Note | undefined {
 
 /** Whisper marks silence and noises with tokens like [BLANK_AUDIO] or (wind blowing). */
 function cleanTranscript(output: string): string {
-  return output
+  const text = output
     .replace(/\[[^\]]*\]|\([^)]*\)/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+  return echoesPrompt(text) ? '' : text
+}
+
+const PROMPT_WORDS = new Set(PROMPT.toLowerCase().match(/[a-z0-9]+/g) ?? [])
+
+/**
+ * On silence whisper tends to repeat the vocabulary hint ("QNH, squawk, runway…"): that is no speech.
+ * A real one- or two-word note ("Readback") is kept.
+ */
+function echoesPrompt(text: string): boolean {
+  const words = text.toLowerCase().match(/[a-z0-9]+/g) ?? []
+  return words.length >= 3 && words.every((word) => PROMPT_WORDS.has(word))
 }
 
 /**

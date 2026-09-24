@@ -124,7 +124,7 @@ async function main() {
       `#${m.number} ${m.kind} t=${m.timeMs} pressed=${m.pressedAtMs} end=${m.endMs} cat=${m.categoryIds.join(',')} screenshot=${shot && existsSync(shot) ? 'OK' : 'MISSING'}`
     )
   }
-  const folderName = session.folder.split(/[\/]/).pop()
+  const folderName = session.folderName
   const img = await evaluate(
     `new Promise((res) => { const i = new Image(); i.onload = () => res('loaded ' + i.naturalWidth + 'x' + i.naturalHeight); i.onerror = () => res('error'); i.src = 'trs-media://sessions/' + encodeURIComponent(${JSON.stringify(folderName)}) + '/' + encodeURIComponent(${JSON.stringify(folderName + '_screen')}) + '/m-0001.png' })`
   )
@@ -137,11 +137,15 @@ async function main() {
   await evaluate('window.close()').catch(() => undefined)
   ws.close()
   await new Promise((r) => {
-    app.on('exit', r)
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      log('app did NOT exit: killing it')
       app.kill()
       r()
     }, 8000)
+    app.on('exit', () => {
+      clearTimeout(timer)
+      r()
+    })
   })
   log('app closed')
 }

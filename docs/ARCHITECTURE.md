@@ -12,6 +12,8 @@
   `scripts/fetch-whisper.mjs`) for offline transcription; models downloaded at
   runtime into `%APPDATA%\Training Recording System\models` from a pinned
   Hugging Face revision, checked against size and sha256 (`MODEL_FILES`).
+  On silence whisper tends to repeat the vocabulary prompt: a transcript made
+  only of prompt words (3 or more) counts as no speech.
   whisper-cli reads its arguments in the ANSI code page, so it runs in the
   models folder with relative names (model file, temporary copy of the note):
   paths with Greek, Cyrillic… characters would not be found otherwise.
@@ -115,6 +117,9 @@ through `SessionStore`, which serialises writes per session.
   review opens and at startup). If only the connection dropped, the app
   reconnects (every 5 s for a minute) and `reattachRecording` continues the
   session OBS is still recording into.
+- OBS sends STOPPED a moment before its output is really idle: `stop()`
+  and the profile restore wait (up to 5 s) until nothing is active, or
+  "Stop recording and quit" would leave OBS on the app's profile.
 - Every obs-websocket request has a time limit (10 s; 30 s for profile
   switches and StopRecord). Setup changes run one at a time; `configure`
   re-enters the app's profile/collection first if the trainer switched OBS
