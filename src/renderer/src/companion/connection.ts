@@ -10,6 +10,8 @@ interface Connection {
 }
 
 const RETRY_MS = 2000
+/** A half-open connection (phone waking up) never answers: give up on a command after this. */
+const REQUEST_TIMEOUT_MS = 10_000
 
 /**
  * WebSocket link to the app. It reconnects on its own (Wi-Fi drops, app
@@ -56,9 +58,11 @@ export function useCompanionConnection(): Connection {
         pending.current.clear()
         if (stopped) return
         // A refused handshake before opening usually means this device isn't paired (any more).
+        // The answer may come after the retry already reconnected: then it is stale.
+        const stillDown = (): boolean => socket.current === null || socket.current.readyState !== WebSocket.OPEN
         void fetch('/', { method: 'HEAD' })
-          .then((response) => setStatus(response.status === 401 ? 'unpaired' : 'disconnected'))
-          .catch(() => setStatus('disconnected'))
+          .then((response) => stillDown() && setStatus(response.status === 401 ? 'unpaired' : 'disconnected'))
+          .catch(() => stillDown() && setStatus('disconnected'))
         if (!opened) setStatus('disconnected')
         retry = window.setTimeout(connect, RETRY_MS)
       }
@@ -79,7 +83,22 @@ export function useCompanionConnection(): Connection {
         return
       }
       const id = nextId.current++
-      pending.current.set(id, { resolve, reject })
+      const timer = window.setTimeout(() => {
+        if (!pending.current.delete(id)) return
+        reject(new Error('The app did not answer'))
+        // Most likely a dead connection: start over.
+        if (socket.current === ws) ws.close()
+      }, REQUEST_TIMEOUT_MS)
+      pending.current.set(id, {
+        resolve: () => {
+          window.clearTimeout(timer)
+          resolve()
+        },
+        reject: (error) => {
+          window.clearTimeout(timer)
+          reject(error)
+        }
+      })
       ws.send(JSON.stringify({ id, name, args }))
     })
 

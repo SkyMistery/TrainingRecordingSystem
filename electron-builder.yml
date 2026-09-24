@@ -25,3 +25,11 @@ publish:
 extraResources:
   - from: resources/whisper
     to: whisper
+# Hardening: the installed app can't be run as a plain Node.js runtime or
+# debugged from the command line, and loads only its own, unaltered app.asar.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  onlyLoadAppFromAsar: true
+  enableEmbeddedAsarIntegrityValidation: true

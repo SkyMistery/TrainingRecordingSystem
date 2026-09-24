@@ -271,7 +271,11 @@ async function main() {
     check('a backup copy is kept', existsSync(join(SESSIONS, LOWER, 'session.json.bak')))
     writeFileSync(join(SESSIONS, LOWER, 'session.json'), '{"schemaVersion":1,"id":')
     const afterDamage = await page.evaluate('window.api.listSessions()')
-    check('a damaged session.json is read from the backup', afterDamage.length === 1 && afterDamage[0].noteCount === 2)
+    check(
+      'a damaged session.json is read from the backup',
+      afterDamage.length === 1 && afterDamage[0].noteCount === 2,
+      JSON.stringify(afterDamage).slice(0, 120)
+    )
     // Anything else in the sessions folder never breaks the list.
     mkdirSync(join(SESSIONS, 'not-a-session'), { recursive: true })
     writeFileSync(join(SESSIONS, 'not-a-session', 'session.json'), '{"hello":"world"}')

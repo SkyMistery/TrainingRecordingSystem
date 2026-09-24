@@ -1,9 +1,9 @@
-import { Button } from '@ivao/atmosphere-react'
-import { Flag, Mic, MoveHorizontal, Trash2 } from 'lucide-react'
+import { Flag, Mic, MoveHorizontal } from 'lucide-react'
 import { mediaUrl } from '@shared/media'
 import type { Marker, MarkerCategory } from '@shared/types'
 import type { SendCommand } from '../commands'
 import { formatDuration } from '../format'
+import { ConfirmDeleteButton } from './ConfirmDeleteButton'
 import { NoteItem } from './NoteItem'
 
 const UNCATEGORISED = '#8b8ca9'
@@ -135,15 +135,12 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
                       Dictating
                     </span>
                   )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
+                  <ConfirmDeleteButton
                     className="-my-2 ml-auto"
-                    aria-label={`Delete marker ${marker.number}`}
-                    onClick={() => props.send('deleteMarker', props.folderName, marker.id)}
-                  >
-                    <Trash2 className="size-4" aria-hidden />
-                  </Button>
+                    label={`Delete marker ${marker.number}`}
+                    disabled={marker.id === props.dictatingMarkerId}
+                    onConfirm={() => props.send('deleteMarker', props.folderName, marker.id)}
+                  />
                 </div>
                 <CategoryChips
                   categories={props.categories}

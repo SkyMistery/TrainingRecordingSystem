@@ -63,7 +63,9 @@ export function CompanionCard({
   useEffect(() => setPort(String(settings.port)), [settings.port])
 
   const save = (patch: Partial<CompanionSettings>): void =>
-    void window.api.saveCompanionSettings({ ...settings, ...patch })
+    void window.api
+      .saveCompanionSettings(patch)
+      .catch((error: unknown) => console.error('Could not save the Companion settings', error))
 
   return (
     <SetupSection

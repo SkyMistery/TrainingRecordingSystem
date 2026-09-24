@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto'
 import { copyFileSync, existsSync, readFileSync } from 'node:fs'
-import { copyFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import { writeJsonAtomic } from './files'
@@ -137,8 +136,9 @@ export function updateSettings(patch: Partial<Settings>): Promise<Settings> {
   current = { ...getSettings(), ...patch }
   const write = async (): Promise<void> => {
     // The latest settings, so a queued write never puts back older values.
-    await writeJsonAtomic(filePath(), getSettings())
-    await copyFile(filePath(), backupPath()).catch(() => undefined)
+    const settings = getSettings()
+    await writeJsonAtomic(filePath(), settings)
+    await writeJsonAtomic(backupPath(), settings).catch(() => undefined)
   }
   const next = writes.then(write, write)
   writes = next.catch(() => undefined)

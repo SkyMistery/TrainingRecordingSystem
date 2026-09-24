@@ -44,9 +44,11 @@ needs the trainer's OK.
 
 - Typecheck + build after every change; format with Prettier.
 - tests/e2e/*.cjs drive the real app via CDP (see tests/e2e/README.md). Run
-  the relevant one after changing behaviour. `review.cjs`, `sessions.cjs` and
-  `mic.cjs` use an isolated `--user-data-dir` and their own ports, so they don't disturb the
-  trainer's running app.
+  the relevant one after changing behaviour. `review.cjs`, `sessions.cjs`,
+  `transcribe.cjs` and `mic.cjs` use an isolated `--user-data-dir` and their own
+  ports, so they don't disturb the trainer's running app. The app is single
+  instance per user-data folder: an isolated instance runs beside the
+  trainer's, one on the default folder only focuses it.
 - For UI screenshots, render the built renderer (out/renderer) in an Electron
   window with a mocked preload. Use `webPreferences: { offscreen: true }` +
   `capturePage()` (a visible window at x: -4000 gave blank pages or
@@ -59,6 +61,12 @@ needs the trainer's OK.
 - sessions.cjs covers the sessions list (counts, retranscribe, categories,
   delete, edit details) in an isolated instance with a sessions folder in
   %TEMP% — run it after touching sessions.ts or the list actions.
+  transcribe.cjs runs whisper through non-ASCII paths — run it after touching
+  transcriber.ts.
+- The packaged app has Electron fuses (no ELECTRON_RUN_AS_NODE, asar
+  integrity): test packaged behaviour with `dist/win-unpacked` and an
+  isolated `--user-data-dir` (never the default one: it would use the
+  trainer's settings and OBS).
 - The trainer is often running the app. Before closing it, check that OBS is
   not recording (obs-websocket `GetRecordStatus`, read-only) and close it
   gracefully (`CloseMainWindow`), never kill it. Never stop a recording you

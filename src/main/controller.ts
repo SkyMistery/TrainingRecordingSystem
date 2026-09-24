@@ -294,7 +294,8 @@ export class Controller {
     handle('capture:listDisplays', () => this.requireObs().listDisplays())
     handle('capture:listAudioTargets', (kind: AudioSourceKind) => this.requireObs().listAudioTargets(kind))
     handle('capture:preview', () => (this.recorder.isConnected() ? this.recorder.preview(640) : null))
-    handle('capture:save', async (capture: CaptureConfig) => {
+    handle('capture:save', async (patch: Partial<CaptureConfig>) => {
+      const capture: CaptureConfig = { ...this.state.capture, ...patch }
       await updateSettings({ capture })
       this.patch({ capture })
       if (this.recorder.isConnected() && !this.recorder.isRecording()) {
@@ -329,11 +330,13 @@ export class Controller {
     handle('session:stop', () => this.stopSession())
 
     handle('command', (name: SessionCommandName, args: unknown[]) => this.execute(name, args))
-    handle('markers:saveSettings', async (markers: MarkerSettings) => {
+    handle('markers:saveSettings', async (patch: Partial<MarkerSettings>) => {
+      const markers: MarkerSettings = { ...getSettings().markers, ...patch }
       await updateSettings({ markers })
       this.patch({ markerSettings: markers })
     })
-    handle('notes:saveSettings', async (notes: NoteSettings) => {
+    handle('notes:saveSettings', async (patch: Partial<NoteSettings>) => {
+      const notes: NoteSettings = { ...getSettings().notes, ...patch }
       await updateSettings({ notes })
       this.patch({ noteSettings: notes })
       // A different model or language may unblock notes waiting for one.
@@ -346,7 +349,8 @@ export class Controller {
     handle('player:report', (player: PlayerState) => {
       if (this.state.review) this.patch({ review: { ...this.state.review, player } })
     })
-    handle('companion:save', async (companion: CompanionSettings) => {
+    handle('companion:save', async (patch: Partial<CompanionSettings>) => {
+      const companion: CompanionSettings = { ...getSettings().companion, ...patch }
       await updateSettings({ companion })
       this.patch({ companionSettings: companion })
       await this.companion.restart()
@@ -609,7 +613,9 @@ export class Controller {
       await shell.trashItem(folder)
     } catch (error) {
       console.error('Could not delete the session', error)
-      throw new Error('Could not move the session to the Recycle Bin. Close any program using its files and try again.')
+      throw new Error(
+        'Could not move the session to the Recycle Bin. Close any program using its files and try again. On a network drive there is no Recycle Bin: delete the folder from File Explorer instead.'
+      )
     }
     this.broadcast('sessions:changed', null)
   }
@@ -819,7 +825,11 @@ export class Controller {
     const files = [marker.screenshot, ...marker.notes.map((note) => note.audio)].filter(
       (file): file is string => !!file
     )
-    for (const file of files) await unlink(join(folder, file)).catch(() => undefined)
+    // An accidental push-to-talk tap (force) leaves nothing worth keeping in the Recycle Bin.
+    for (const file of files) {
+      if (force) await unlink(join(folder, file)).catch(() => undefined)
+      else await this.discard(join(folder, file))
+    }
   }
 
   // --- Voice notes -----------------------------------------------------------------
@@ -958,7 +968,12 @@ export class Controller {
       marker.notes = marker.notes.filter((item) => item.id !== noteId)
       return found
     })
-    await unlink(join(this.sessionFolder(folderName), note.audio)).catch(() => undefined)
+    await this.discard(join(this.sessionFolder(folderName), note.audio))
+  }
+
+  /** Files of deleted markers and notes go to the Recycle Bin, so a mistake can be undone from Windows. */
+  private async discard(file: string): Promise<void> {
+    await shell.trashItem(file).catch(() => undefined) // no Recycle Bin (e.g. network drive): the file stays
   }
 
   // --- Session edits, review and Companion -------------------------------------------

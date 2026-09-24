@@ -64,16 +64,23 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
     const element = video.current
     if (!element) return
     const seek = (ms: number): void => {
+      if (!Number.isFinite(ms)) return // commands also come from Companion devices
       element.currentTime = Math.max(0, ms) / 1000
+    }
+    // play() is rejected when a pause interrupts it (quick double toggle): that is expected.
+    const play = (): void => {
+      element.play().catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) setError(String(error))
+      })
     }
     const position = element.currentTime * 1000
     switch (command.type) {
       case 'toggle':
-        if (element.paused) void element.play()
+        if (element.paused) play()
         else element.pause()
         break
       case 'play':
-        void element.play()
+        play()
         break
       case 'pause':
         element.pause()
@@ -105,7 +112,16 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return
+      if (event.defaultPrevented) return
+      const target = event.target instanceof Element ? event.target : null
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return
+      // Dialogs (e.g. the Companion QR code) and focused controls keep their own keys.
+      if (target?.closest('[role="dialog"], [role="alertdialog"]')) return
+      if (
+        (event.key === ' ' || event.key === 'Enter') &&
+        target?.closest('button, [role="switch"], [role="slider"], select, a')
+      )
+        return
       const step = event.shiftKey ? 30_000 : 5_000
       const actions: Record<string, () => void> = {
         ' ': () => apply({ type: 'toggle' }),
@@ -149,7 +165,11 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
             src={src}
             className={`block origin-top-left ${theatre ? 'max-h-[calc(100vh-10rem)]' : 'max-h-[calc(100vh-19rem)]'}`}
             style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})` }}
-            onLoadedMetadata={(event) => setVideoDurationMs(event.currentTarget.duration * 1000)}
+            onLoadedMetadata={(event) => {
+              // A recording cut short by a crash can report an unknown (Infinity/NaN) duration.
+              const seconds = event.currentTarget.duration
+              setVideoDurationMs(Number.isFinite(seconds) ? seconds * 1000 : 0)
+            }}
             onTimeUpdate={(event) => {
               setPositionMs(event.currentTarget.currentTime * 1000)
               report(false)

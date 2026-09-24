@@ -25,7 +25,7 @@ import { CompanionCard } from '../components/CompanionCard'
 import { MarkersCard } from '../components/MarkersCard'
 import { SetupSection, useCollapsedSections, type SectionProps } from '../components/SetupSection'
 import { VoiceNotesCard } from '../components/VoiceNotesCard'
-import { useAudioLevels } from '../hooks'
+import { type SettingsPatch, useAudioLevels, usePatchSaver } from '../hooks'
 
 function useAction(): [string | null, <T>(fn: () => Promise<T>) => Promise<T | undefined>] {
   const [error, setError] = useState<string | null>(null)
@@ -141,7 +141,7 @@ function DisplayCard({
   section
 }: {
   state: AppState
-  save: (patch: Partial<CaptureConfig>) => void
+  save: (patch: SettingsPatch<CaptureConfig>) => void
   section: SectionProps
 }): React.JSX.Element {
   const connected = state.obs.status === 'connected'
@@ -165,7 +165,10 @@ function DisplayCard({
     }
     let cancelled = false
     const refresh = (): void => {
-      void window.api.getPreview().then((image) => !cancelled && setPreview(image))
+      window.api
+        .getPreview()
+        .then((image) => !cancelled && setPreview(image))
+        .catch(() => !cancelled && setPreview(null))
     }
     refresh()
     const timer = setInterval(refresh, 2000)
@@ -274,7 +277,7 @@ function AudioCard({
   section
 }: {
   state: AppState
-  save: (patch: Partial<CaptureConfig>) => void
+  save: (patch: SettingsPatch<CaptureConfig>) => void
   section: SectionProps
 }): React.JSX.Element {
   const connected = state.obs.status === 'connected'
@@ -307,7 +310,7 @@ function AudioCard({
       volumeDb: 0,
       muteDuringNotes: kind === 'microphone'
     }
-    save({ audioSources: [...sources, source] })
+    save((current) => ({ audioSources: [...current.audioSources, source] }))
     setTarget(undefined)
   }
 
@@ -339,9 +342,15 @@ function AudioCard({
           })
         }
         onNotesMuteChange={(id, value) =>
-          save({ audioSources: sources.map((s) => (s.id === id ? { ...s, muteDuringNotes: value } : s)) })
+          save((current) => ({
+            audioSources: current.audioSources.map((s) => (s.id === id ? { ...s, muteDuringNotes: value } : s))
+          }))
         }
-        onRemove={state.recording ? undefined : (id) => save({ audioSources: sources.filter((s) => s.id !== id) })}
+        onRemove={
+          state.recording
+            ? undefined
+            : (id) => save((current) => ({ audioSources: current.audioSources.filter((s) => s.id !== id) }))
+        }
       />
 
       {!state.recording && (
@@ -430,10 +439,8 @@ type SectionId = (typeof SECTIONS)[number]
 
 export function SetupPage({ state }: { state: AppState }): React.JSX.Element {
   const [error, run] = useAction()
-  const save = useCallback(
-    (patch: Partial<CaptureConfig>) => void run(() => window.api.saveCapture({ ...state.capture, ...patch })),
-    [run, state.capture]
-  )
+  const saver = usePatchSaver(state.capture, window.api.saveCapture)
+  const save = useCallback((patch: SettingsPatch<CaptureConfig>) => void run(() => saver(patch)), [run, saver])
 
   const sections = useCollapsedSections()
   const section = (id: SectionId): SectionProps => ({ open: sections.isOpen(id), onToggle: () => sections.toggle(id) })

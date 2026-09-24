@@ -29,7 +29,16 @@ const SESSION_TYPES = [
   { value: 'Exam', label: 'Exam' }
 ]
 
-function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStarted: () => void }): React.JSX.Element {
+/** `onBusyChange` keeps the dialog open while starting: closing it would hide an error. */
+function NewSessionForm({
+  onCancel,
+  onStarted,
+  onBusyChange
+}: {
+  onCancel: () => void
+  onStarted: () => void
+  onBusyChange: (busy: boolean) => void
+}): React.JSX.Element {
   const [form, setForm] = useState<SessionMetadata>({
     traineeVid: '',
     traineeName: '',
@@ -42,17 +51,24 @@ function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStart
   const [starting, setStarting] = useState(false)
 
   useEffect(() => {
-    void window.api.getSessionDefaults().then(({ trainerVid }) => setForm((f) => ({ ...f, trainerVid })))
+    window.api
+      .getSessionDefaults()
+      .then(({ trainerVid }) => setForm((f) => ({ ...f, trainerVid })))
+      .catch(() => undefined)
   }, [])
 
   const set = (field: keyof SessionMetadata) => (event: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [field]: field === 'position' ? event.target.value.toUpperCase() : event.target.value }))
 
   const valid =
-    /^\d+$/.test(form.traineeVid.trim()) && form.position.trim() !== '' && /^\d*$/.test(form.trainerVid.trim())
+    /^\d+$/.test(form.traineeVid.trim()) &&
+    form.position.trim() !== '' &&
+    /^\d*$/.test(form.trainerVid.trim()) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(form.date)
 
   const start = async (): Promise<void> => {
     setStarting(true)
+    onBusyChange(true)
     setError(null)
     try {
       await window.api.startSession({
@@ -68,6 +84,7 @@ function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStart
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setStarting(false)
+      onBusyChange(false)
     }
   }
 
@@ -113,7 +130,7 @@ function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStart
         <Alert variant="destructive" Icon={CircleAlert} title="Could not start recording" description={error} />
       )}
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={onCancel}>
+        <Button type="button" variant="outline" onClick={onCancel} disabled={starting}>
           Cancel
         </Button>
         <Button type="submit" disabled={!valid} isLoading={starting}>
@@ -126,7 +143,15 @@ function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStart
 }
 
 /** Corrects typos in a recorded session; the folder is renamed to match. */
-function EditDetailsForm({ session, onClose }: { session: SessionSummary; onClose: () => void }): React.JSX.Element {
+function EditDetailsForm({
+  session,
+  onClose,
+  onBusyChange
+}: {
+  session: SessionSummary
+  onClose: () => void
+  onBusyChange: (busy: boolean) => void
+}): React.JSX.Element {
   const [form, setForm] = useState<SessionDetails>({
     traineeVid: session.metadata.traineeVid,
     traineeName: session.metadata.traineeName,
@@ -145,14 +170,17 @@ function EditDetailsForm({ session, onClose }: { session: SessionSummary; onClos
 
   const save = async (): Promise<void> => {
     setSaving(true)
+    onBusyChange(true)
     setError(null)
     try {
       await window.api.updateSessionDetails(session.folderName, form)
+      onBusyChange(false)
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
+      onBusyChange(false)
     }
   }
 
@@ -206,6 +234,8 @@ function EditDetailsForm({ session, onClose }: { session: SessionSummary; onClos
 export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSetup: () => void }): React.JSX.Element {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
+  /** A form in the New session or Edit dialog is working: Escape or a click outside must not close it. */
+  const [formBusy, setFormBusy] = useState(false)
   const [listError, setListError] = useState<{ title: string; message: string } | null>(null)
   const [toDelete, setToDelete] = useState<SessionSummary | null>(null)
   const [toEdit, setToEdit] = useState<SessionSummary | null>(null)
@@ -270,7 +300,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
           <div className="flex gap-3">
             <Dialog
               open={dialogOpen}
-              onOpenChange={setDialogOpen}
+              onOpenChange={(open) => (open || !formBusy) && setDialogOpen(open)}
               title="New session"
               description="These details name the session folder and help you find it later."
               trigger={
@@ -280,7 +310,11 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
                 </Button>
               }
             >
-              <NewSessionForm onCancel={() => setDialogOpen(false)} onStarted={() => setDialogOpen(false)} />
+              <NewSessionForm
+                onCancel={() => setDialogOpen(false)}
+                onStarted={() => setDialogOpen(false)}
+                onBusyChange={setFormBusy}
+              />
             </Dialog>
             {!ready && !checklist.visible && (
               <Button variant="outline" onClick={onOpenSetup}>
@@ -405,7 +439,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
 
       <Dialog
         open={toEdit !== null}
-        onOpenChange={(open) => !open && setToEdit(null)}
+        onOpenChange={(open) => !open && !formBusy && setToEdit(null)}
         title="Edit session details"
         description={
           toEdit
@@ -413,7 +447,14 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
             : undefined
         }
       >
-        {toEdit && <EditDetailsForm key={toEdit.folderName} session={toEdit} onClose={() => setToEdit(null)} />}
+        {toEdit && (
+          <EditDetailsForm
+            key={toEdit.folderName}
+            session={toEdit}
+            onClose={() => setToEdit(null)}
+            onBusyChange={setFormBusy}
+          />
+        )}
       </Dialog>
 
       <Dialog

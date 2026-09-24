@@ -40,7 +40,11 @@ export function HotkeyInput({ value, onChange, conflict, label }: HotkeyInputPro
           size="sm"
           className="min-w-44 justify-start"
           aria-label={`${label} hotkey`}
-          onClick={() => setCapturing((value) => !value)}
+          onClick={(event) => {
+            // Without focus, Space or Enter pressed to bind them can't also click this button.
+            if (!capturing) event.currentTarget.blur()
+            setCapturing((value) => !value)
+          }}
         >
           <Keyboard className="size-4" aria-hidden />
           {capturing ? 'Press a key or mouse button…' : (value?.label ?? 'Not set')}

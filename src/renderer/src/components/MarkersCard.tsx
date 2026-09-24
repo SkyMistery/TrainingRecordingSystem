@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, Button, Input, Label, Switch } from '@ivao/atmosphere-react'
+import { Alert, Button, Dialog, Input, Label, Switch } from '@ivao/atmosphere-react'
 import { Info, Plus, Trash2 } from 'lucide-react'
 import { sameHotkey } from '@shared/hotkey'
 import type { Hotkey, HotkeyAction, MarkerCategory, MarkerSettings } from '@shared/types'
+import { type SettingsPatch, usePatchSaver } from '../hooks'
 import { HotkeyInput } from './HotkeyInput'
 import { SetupSection, type SectionProps } from './SetupSection'
 
@@ -58,6 +59,7 @@ function CategoryRow({
   onRemove: () => void
 }): React.JSX.Element {
   const [name, setName] = useState(category.name)
+  const [confirmRemove, setConfirmRemove] = useState(false)
   useEffect(() => setName(category.name), [category.name])
   const onHotkey = useCallback((hotkey: Hotkey | null) => onChange({ ...category, hotkey }), [category, onChange])
 
@@ -73,9 +75,32 @@ function CategoryRow({
         <ColorPicker value={category.color} onChange={(color) => onChange({ ...category, color })} />
       </div>
       <HotkeyInput label={category.name} value={category.hotkey} onChange={onHotkey} conflict={conflict} />
-      <Button variant="ghost" size="icon" aria-label={`Remove ${category.name}`} onClick={onRemove}>
+      <Button variant="ghost" size="icon" aria-label={`Remove ${category.name}`} onClick={() => setConfirmRemove(true)}>
         <Trash2 className="size-4" aria-hidden />
       </Button>
+      {/* Sessions store category ids: a removed category can't be given back to their markers. */}
+      <Dialog
+        open={confirmRemove}
+        onOpenChange={setConfirmRemove}
+        title={`Remove “${category.name}”?`}
+        description="Markers of recorded sessions that have this category will show without it, even if you add a category with the same name later. To change its name or colour, edit it instead."
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={() => setConfirmRemove(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              setConfirmRemove(false)
+              onRemove()
+            }}
+          >
+            <Trash2 className="size-4" aria-hidden />
+            Remove
+          </Button>
+        </div>
+      </Dialog>
     </li>
   )
 }
@@ -90,9 +115,11 @@ export function MarkersCard({
   const [preRoll, setPreRoll] = useState(String(settings.preRollSeconds))
   useEffect(() => setPreRoll(String(settings.preRollSeconds)), [settings.preRollSeconds])
 
+  const saver = usePatchSaver(settings, window.api.saveMarkerSettings)
   const save = useCallback(
-    (patch: Partial<MarkerSettings>) => void window.api.saveMarkerSettings({ ...settings, ...patch }),
-    [settings]
+    (patch: SettingsPatch<MarkerSettings>) =>
+      void saver(patch).catch((error: unknown) => console.error('Could not save the marker settings', error)),
+    [saver]
   )
 
   /** Every bound hotkey with the name of what it does, to flag duplicates. */
@@ -104,21 +131,22 @@ export function MarkersCard({
     bindings.find(([other, name]) => name !== own && sameHotkey(hotkey, other))?.[1] ?? null
 
   const setAction = (action: HotkeyAction) => (hotkey: Hotkey | null) =>
-    save({ hotkeys: { ...settings.hotkeys, [action]: hotkey } })
+    save((current) => ({ hotkeys: { ...current.hotkeys, [action]: hotkey } }))
 
   const updateCategory = (updated: MarkerCategory): void =>
-    save({ categories: settings.categories.map((c) => (c.id === updated.id ? updated : c)) })
+    save((current) => ({ categories: current.categories.map((c) => (c.id === updated.id ? updated : c)) }))
 
-  const addCategory = (): void => {
-    const used = new Set(settings.categories.map((c) => c.color))
-    const color = PALETTE.find((c) => !used.has(c)) ?? PALETTE[0]
-    save({
-      categories: [
-        ...settings.categories,
-        { id: crypto.randomUUID().slice(0, 8), name: 'New category', color, hotkey: null }
-      ]
+  const addCategory = (): void =>
+    save((current) => {
+      const used = new Set(current.categories.map((c) => c.color))
+      const color = PALETTE.find((c) => !used.has(c)) ?? PALETTE[0]
+      return {
+        categories: [
+          ...current.categories,
+          { id: crypto.randomUUID().slice(0, 8), name: 'New category', color, hotkey: null }
+        ]
+      }
     })
-  }
 
   return (
     <SetupSection
@@ -188,7 +216,9 @@ export function MarkersCard({
               category={category}
               conflict={conflictFor(category.hotkey, category.name)}
               onChange={updateCategory}
-              onRemove={() => save({ categories: settings.categories.filter((c) => c.id !== category.id) })}
+              onRemove={() =>
+                save((current) => ({ categories: current.categories.filter((c) => c.id !== category.id) }))
+              }
             />
           ))}
         </ul>

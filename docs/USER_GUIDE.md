@@ -39,7 +39,13 @@ doesn't answer, it tells you why and offers to open Setup.
 
 TRS uses its own OBS profile and scene collection ("IVAO TRS"): your own
 scenes are never changed, and OBS goes back to your profile when TRS closes.
-If OBS is already recording or streaming, TRS waits instead of switching.
+If OBS is already recording, streaming or using its virtual camera, TRS waits
+instead of switching. If you switch OBS to your own profile while TRS is
+open, TRS switches back before recording and never writes into yours.
+
+Close **TRS before OBS**: TRS gives your profile back when it closes, which it
+can't do once OBS is gone. If you closed OBS first, it opens on "IVAO TRS"
+next time: start TRS and quit it, or pick your profile in OBS (Profile menu).
 
 ### Display
 
@@ -72,9 +78,12 @@ Aurora doesn't use. Keys still reach Aurora too.
   management, Positive — rename, recolour, add your own. A marker can have
   several categories (e.g. Phraseology and Coordination): click the chips to
   add or remove them. A category hotkey adds that category to the latest
-  marker, or removes it if the marker already has it.
+  marker, or removes it if the marker already has it. Removing a category
+  also removes it from the markers of recorded sessions (TRS asks first):
+  rename it instead if you only want another name.
 - A small always-on-top **status window** shows time, markers and dictation,
-  on a monitor that isn't recorded. It never takes focus from Aurora.
+  on a monitor that isn't recorded, and is left out of the recording even if
+  you drag it onto that monitor. It never takes focus from Aurora.
 
 If Aurora runs **as administrator**, run TRS as administrator too, otherwise
 Windows doesn't pass it the keys pressed in Aurora.
@@ -120,6 +129,19 @@ into the new one if you want them in the list.
 While recording, the status window also shows how many voice notes are
 waiting to be transcribed.
 
+While recording, the TRS window itself is left out of screen captures (OBS,
+Discord), so voice note transcriptions can't end up in the video even with a
+single monitor. The Review window is shared normally.
+
+If the connection to OBS drops during a session, TRS reconnects on its own for
+a minute and carries on with the same session if OBS kept recording (markers
+pressed while disconnected are lost). If OBS itself stopped or crashed, the
+session is closed and its recording is picked up from the session folder the
+next time you open it.
+
+If the microphone is unplugged, TRS says so and switches to the Windows
+default microphone. A voice note ends by itself after 3 minutes.
+
 ## 3. Debriefing
 
 **Sessions → Review** opens the player. This window never shows your notes,
@@ -144,13 +166,17 @@ and transcriptions, all markers, category chips, player controls and speed,
 and buttons to adjust a marker to the current position ("Start at / End at").
 
 - **Notes window** (Review page or Setup → Companion): the Companion in a
-  window on another monitor.
+  window on a monitor that is neither the TRS window's nor the recorded one.
+  It is left out of screen captures, so it stays private even if it ends up on
+  a shared or recorded screen. (**Open in browser** has no such protection:
+  keep that browser window off shared screens.)
 - **Tablet or phone**: Setup → Companion → **Allow a tablet or phone on the
   same network**, then scan the QR code. The device stays paired; next time
   open the same address. **New pairing code** unpairs every device.
 - The **Companion** button in the top bar (shown while the Companion is
   enabled) opens the QR code from any page, with the count of connected
-  devices.
+  devices. While a review is open the QR code stays hidden until you press
+  **Show the QR code**, since that window may be shared on Discord.
 
 During a recording the Companion also offers Marker, Range and Hold-to-dictate
 buttons (the PC's microphone records the note).
@@ -175,7 +201,8 @@ Use network access only on your home network, not on public Wi-Fi.
 In Review (from the notes window or a tablet) you can change categories, edit
 transcriptions (click the text), transcribe again, delete notes or markers,
 and move a marker or a range's start/end to the current position. Changes are
-saved immediately.
+saved immediately. Deleting asks once more ("Delete?"), and the screenshot and
+audio files go to the Windows Recycle Bin.
 
 From the **⋯** menu of a session in the list:
 

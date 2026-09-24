@@ -19,12 +19,13 @@ interface TimelineProps {
 export function Timeline(props: TimelineProps): React.JSX.Element {
   const track = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<number | null>(null)
-  const duration = Math.max(1, props.durationMs)
+  const duration = Number.isFinite(props.durationMs) ? Math.max(1, props.durationMs) : 1
   const pct = (ms: number): string => `${(Math.min(duration, Math.max(0, ms)) / duration) * 100}%`
 
   const timeAt = (clientX: number): number => {
     const rect = track.current!.getBoundingClientRect()
-    return Math.round(((clientX - rect.left) / rect.width) * duration)
+    const fraction = rect.width > 0 ? (clientX - rect.left) / rect.width : 0
+    return Math.round(Math.min(1, Math.max(0, fraction)) * duration)
   }
 
   return (

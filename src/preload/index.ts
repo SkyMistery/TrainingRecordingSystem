@@ -58,7 +58,7 @@ const api = {
   listDisplays: () => invoke<DisplayOption[]>('capture:listDisplays'),
   listAudioTargets: (kind: AudioSourceKind) => invoke<AudioTargetOption[]>('capture:listAudioTargets', kind),
   getPreview: () => invoke<string | null>('capture:preview'),
-  saveCapture: (capture: CaptureConfig) => invoke<void>('capture:save', capture),
+  saveCapture: (capture: Partial<CaptureConfig>) => invoke<void>('capture:save', capture),
   setSourceMuted: (sourceId: string, muted: boolean) => invoke<void>('capture:setMuted', sourceId, muted),
   setSourceVolume: (sourceId: string, volumeDb: number) => invoke<void>('capture:setVolume', sourceId, volumeDb),
 
@@ -77,9 +77,9 @@ const api = {
 
   /** Session edits and live actions (markers, notes, player), shared with the Companion page. */
   command: <K extends SessionCommandName>(name: K, ...args: SessionCommands[K]) => invoke<void>('command', name, args),
-  saveMarkerSettings: (settings: MarkerSettings) => invoke<void>('markers:saveSettings', settings),
+  saveMarkerSettings: (settings: Partial<MarkerSettings>) => invoke<void>('markers:saveSettings', settings),
   onMarkerFeedback: (listener: (kind: MarkerFeedback) => void) => subscribe('marker:feedback', listener),
-  saveNoteSettings: (settings: NoteSettings) => invoke<void>('notes:saveSettings', settings),
+  saveNoteSettings: (settings: Partial<NoteSettings>) => invoke<void>('notes:saveSettings', settings),
   downloadModel: (model: WhisperModelId) => invoke<void>('models:download', model),
   cancelModelDownload: () => invoke<void>('models:cancelDownload'),
 
@@ -88,7 +88,7 @@ const api = {
   reportPlayer: (player: PlayerState) => invoke<void>('player:report', player),
   onPlayerCommand: (listener: (command: PlayerCommand) => void) => subscribe('player:command', listener),
 
-  saveCompanionSettings: (settings: CompanionSettings) => invoke<void>('companion:save', settings),
+  saveCompanionSettings: (settings: Partial<CompanionSettings>) => invoke<void>('companion:save', settings),
   newCompanionToken: () => invoke<void>('companion:newToken'),
   refreshCompanion: () => invoke<void>('companion:refresh'),
   openNotesWindow: () => invoke<void>('companion:openWindow'),

@@ -3,6 +3,7 @@ import { Alert, Badge, Button, Input, Label, Progress, Select, Switch } from '@i
 import { CircleAlert, Download, X } from 'lucide-react'
 import { WHISPER_LANGUAGES, WHISPER_MODELS } from '@shared/whisper'
 import type { AppState, NoteSettings, WhisperModelId } from '@shared/types'
+import { usePatchSaver } from '../hooks'
 import { openMicrophone } from '../microphone'
 import { SetupSection, type SectionProps } from './SetupSection'
 
@@ -82,9 +83,11 @@ export function VoiceNotesCard({ state, section }: { state: AppState; section: S
   const [attach, setAttach] = useState(String(settings.attachWindowSeconds))
   useEffect(() => setAttach(String(settings.attachWindowSeconds)), [settings.attachWindowSeconds])
 
+  const saver = usePatchSaver(settings, window.api.saveNoteSettings)
   const save = useCallback(
-    (patch: Partial<NoteSettings>) => void window.api.saveNoteSettings({ ...settings, ...patch }),
-    [settings]
+    (patch: Partial<NoteSettings>) =>
+      void saver(patch).catch((error: unknown) => console.error('Could not save the voice note settings', error)),
+    [saver]
   )
 
   useEffect(() => {

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { createWriteStream, existsSync } from 'node:fs'
-import { mkdir, rename, rm } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, rename, rm } from 'node:fs/promises'
 import { availableParallelism } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -32,6 +32,8 @@ const PROMPT =
   'ATC training debrief. QNH, squawk, runway, taxi, holding point, handoff, readback, separation, callsign, FL, ILS, SID, STAR.'
 
 const TIMEOUT_MS = 5 * 60_000
+/** Name of the temporary note copies whisper reads (see runWhisper). */
+const TEMP_PREFIX = 'note-'
 
 interface Job {
   folder: string
@@ -77,7 +79,9 @@ export class Transcriber {
   constructor(
     private readonly store: SessionStore,
     private readonly events: TranscriberEvents
-  ) {}
+  ) {
+    void this.removeTemporaryCopies()
+  }
 
   static binaryPath(): string {
     const base = app.isPackaged
@@ -242,24 +246,36 @@ export class Transcriber {
     if (this.queue.length > 0 && existsSync(Transcriber.modelPath(getSettings().notes.model))) void this.process()
   }
 
-  private runWhisper(wavPath: string, model: WhisperModelId, language: string): Promise<string> {
+  /**
+   * whisper-cli reads its arguments in the Windows ANSI code page, so a path
+   * with other characters (a Greek or Cyrillic user name, say) isn't found.
+   * It runs in the models folder instead, with plain relative names: the model
+   * file and a temporary copy of the note.
+   */
+  private async runWhisper(wavPath: string, model: WhisperModelId, language: string): Promise<string> {
+    const dir = Transcriber.modelsDir()
+    const copy = `${TEMP_PREFIX}${randomBytes(4).toString('hex')}.wav`
+    await copyFile(wavPath, join(dir, copy))
+    try {
+      return await this.spawnWhisper(dir, `ggml-${model}.bin`, copy, language)
+    } finally {
+      await rm(join(dir, copy), { force: true }).catch(() => undefined)
+    }
+  }
+
+  /** Temporary copies left behind by a crash. */
+  private async removeTemporaryCopies(): Promise<void> {
+    const names = await readdir(Transcriber.modelsDir()).catch(() => [] as string[])
+    for (const name of names.filter((item) => item.startsWith(TEMP_PREFIX))) {
+      await rm(join(Transcriber.modelsDir(), name), { force: true }).catch(() => undefined)
+    }
+  }
+
+  private spawnWhisper(cwd: string, modelFile: string, wavFile: string, language: string): Promise<string> {
     const threads = String(Math.max(1, Math.min(4, availableParallelism() - 1)))
-    const args = [
-      '-m',
-      Transcriber.modelPath(model),
-      '-f',
-      wavPath,
-      '-l',
-      language,
-      '-nt',
-      '-np',
-      '-t',
-      threads,
-      '--prompt',
-      PROMPT
-    ]
+    const args = ['-m', modelFile, '-f', wavFile, '-l', language, '-nt', '-np', '-t', threads, '--prompt', PROMPT]
     return new Promise((resolve, reject) => {
-      const child = spawn(Transcriber.binaryPath(), args, { windowsHide: true })
+      const child = spawn(Transcriber.binaryPath(), args, { windowsHide: true, cwd })
       const output: Buffer[] = []
       const errors: Buffer[] = []
       const timer = setTimeout(() => child.kill(), TIMEOUT_MS)

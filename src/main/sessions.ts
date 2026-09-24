@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { copyFile, mkdir, readdir, readFile, rename, stat } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, stat } from 'node:fs/promises'
 import { basename, isAbsolute, join } from 'node:path'
 import type { SessionFile, SessionMetadata, SessionSummary } from '../shared/types'
 import { exists, renameWithRetry, writeJsonAtomic } from './files'
@@ -60,9 +60,9 @@ export async function createSession(
 }
 
 export async function saveSession(folder: string, session: SessionFile): Promise<void> {
-  const file = join(folder, SESSION_FILE)
-  await writeJsonAtomic(file, session)
-  await copyFile(file, join(folder, BACKUP_FILE)).catch(() => undefined)
+  await writeJsonAtomic(join(folder, SESSION_FILE), session)
+  // Written the same way (never half-written), and after the file itself.
+  await writeJsonAtomic(join(folder, BACKUP_FILE), session).catch(() => undefined)
 }
 
 async function readSessionFile(file: string): Promise<SessionFile> {

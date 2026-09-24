@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Textarea } from '@ivao/atmosphere-react'
-import { Loader2, Pause, Play, RotateCcw, Trash2 } from 'lucide-react'
+import { Loader2, Pause, Play, RotateCcw } from 'lucide-react'
 import { mediaUrl } from '@shared/media'
 import type { Note } from '@shared/types'
 import { formatDuration } from '../format'
+import { ConfirmDeleteButton } from './ConfirmDeleteButton'
 
 const STATUS_TEXT: Partial<Record<Note['status'], string>> = {
   pending: 'Waiting to be transcribed…',
@@ -109,9 +110,7 @@ export function NoteItem({
           <RotateCcw className="size-4" aria-hidden />
         </Button>
       )}
-      <Button variant="ghost" size="icon" aria-label="Delete note" onClick={onDelete}>
-        <Trash2 className="size-4" aria-hidden />
-      </Button>
+      <ConfirmDeleteButton label="Delete note" onConfirm={onDelete} />
     </div>
   )
 }

@@ -10,6 +10,8 @@ const MAX_SCALE = 8
 const IDENTITY: Zoom = { scale: 1, x: 0, y: 0 }
 /** Pointer travel (px) above which a press is a pan, not a click. */
 const DRAG_THRESHOLD = 4
+/** While zoomed, a click waits this long in case it is the first half of a double-click (reset). */
+const DOUBLE_CLICK_MS = 250
 
 /** Keeps the zoomed content covering its frame (no empty borders). */
 function clamp(zoom: Zoom, width: number, height: number): Zoom {
@@ -35,6 +37,12 @@ export function useZoom(onClick: () => void): {
   const [element, setElement] = useState<HTMLDivElement | null>(null)
   const [zoom, setZoom] = useState<Zoom>(IDENTITY)
   const drag = useRef<{ startX: number; startY: number; from: Zoom; moved: boolean } | null>(null)
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cancelClick = (): void => {
+    if (clickTimer.current) clearTimeout(clickTimer.current)
+    clickTimer.current = null
+  }
+  useEffect(() => cancelClick, [])
 
   const zoomAt = useCallback((factor: number, clientX?: number, clientY?: number) => {
     const element = frame.current
@@ -73,8 +81,12 @@ export function useZoom(onClick: () => void): {
       frame.current = node
       setElement(node)
     },
-    onDoubleClick: reset,
+    onDoubleClick: () => {
+      cancelClick()
+      reset()
+    },
     onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return // right or middle button: not a click on the video
       event.currentTarget.setPointerCapture(event.pointerId)
       drag.current = { startX: event.clientX, startY: event.clientY, from: zoom, moved: false }
     },
@@ -88,10 +100,21 @@ export function useZoom(onClick: () => void): {
       const rect = event.currentTarget.getBoundingClientRect()
       setZoom(clamp({ ...current.from, x: current.from.x + dx, y: current.from.y + dy }, rect.width, rect.height))
     },
-    onPointerUp: () => {
+    onPointerUp: (event: React.PointerEvent<HTMLDivElement>) => {
       const current = drag.current
       drag.current = null
-      if (current && !current.moved) onClick()
+      if (!current || current.moved) return
+      // Not zoomed: nothing to reset, so play/pause right away.
+      if (zoom.scale === 1) {
+        onClick()
+        return
+      }
+      cancelClick()
+      if (event.detail >= 2) return // second click of a double-click: it resets the zoom instead
+      clickTimer.current = setTimeout(() => {
+        clickTimer.current = null
+        onClick()
+      }, DOUBLE_CLICK_MS)
     }
   }
 

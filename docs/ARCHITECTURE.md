@@ -8,9 +8,13 @@
   **Tailwind v4**; Day/Night via the Atmosphere `dark` class.
 - **OBS Studio** (≥ 30.2) through **obs-websocket v5** (`obs-websocket-js`).
 - **uiohook-napi**: system-wide keyboard/mouse hook (press *and* release).
-- **whisper.cpp** (`whisper-cli.exe`, CPU build, pinned in
+- **whisper.cpp** (`whisper-cli.exe`, CPU build, pinned with its sha256 in
   `scripts/fetch-whisper.mjs`) for offline transcription; models downloaded at
-  runtime into `%APPDATA%\Training Recording System\models`.
+  runtime into `%APPDATA%\Training Recording System\models` from a pinned
+  Hugging Face revision, checked against size and sha256 (`MODEL_FILES`).
+  whisper-cli reads its arguments in the ANSI code page, so it runs in the
+  models folder with relative names (model file, temporary copy of the note):
+  paths with Greek, Cyrillic… characters would not be found otherwise.
 - **ws** + **qrcode** for the Companion server.
 - **electron-builder** (NSIS) + **electron-updater** from GitHub Releases.
 
@@ -18,17 +22,24 @@
 
 ```
 Main process (src/main)
- ├─ index.ts           app lifecycle, main window, quit sequence (waits for
- │                     the OBS profile restore), trs-media:// scheme
+ ├─ index.ts           app lifecycle, single instance, navigation and
+ │                     permission guards, main window, quit sequence (waits
+ │                     for the OBS profile restore, 20 s at most),
+ │                     trs-media:// scheme
+ ├─ appPages.ts        loads the renderer; isAppPage (IPC, permissions and
+ │                     navigation are allowed for the app's own pages only);
+ │                     the dev-server URL is ignored when packaged
  ├─ controller.ts      owns AppState; IPC; session commands; recording flow;
  │                     markers; voice notes; review state
  ├─ recorder/          Recorder interface + ObsRecorder (own profile/scene
  │                     collection, display capture, per-app/desktop/mic
  │                     audio, hybrid MP4, clock synced with OBS, screenshots)
  ├─ sessions.ts        session folders (naming, rename after edits),
- │                     session.json (atomic writes, migrations in
+ │                     session.json (atomic writes + .bak, migrations in
  │                     loadSession), SessionStore (serialised edits, live
- │                     or on disk)
+ │                     or on disk), recording recovery (findRecordingFile)
+ ├─ files.ts           writeJsonAtomic (temp file, fsync, rename retried
+ │                     while Windows holds the file), renameWithRetry
  ├─ hotkeys.ts         GlobalHotkeys (uiohook): down/up, no auto-repeat,
  │                     capture mode for binding keys
  ├─ audioWindow.ts     AudioCapture: hidden window keeping the mic open
@@ -36,8 +47,10 @@ Main process (src/main)
  ├─ companion.ts       CompanionServer: HTTP + WebSocket, pairing, media
  ├─ notesWindow.ts     Companion page in a window on another monitor
  ├─ statusWindow.ts    always-on-top, non-focusable status window
+ ├─ displays.ts        which Electron display OBS records
  ├─ media.ts           file serving with HTTP ranges (trs-media:// and /media)
- └─ settings.ts        settings.json in userData (password via safeStorage)
+ └─ settings.ts        settings.json in userData (password via safeStorage;
+                       writes queued, .bak used if the file is damaged)
 
 Renderer (src/renderer) — one bundle, several entry points
  ├─ index.html         main window (App), status window (#status),
@@ -77,7 +90,10 @@ recorded, reviewed or has a note being transcribed
 re-queued after a rename.
 
 Edits address a session by **folder name** (never a path); the controller
-resolves it inside the sessions folder and refuses anything else. Edits work
+resolves it inside the sessions folder and refuses anything else
+(`sessionFilePath` uses `path.relative`, so a drive root such as `E:\` works).
+Settings are saved as patches (`usePatchSaver` in the renderer, merged in the
+main process), so two quick edits don't undo each other. Edits work
 on the session being recorded (in memory) and on finished ones (on disk)
 through `SessionStore`, which serialises writes per session.
 
@@ -89,12 +105,27 @@ through `SessionStore`, which serialises writes per session.
 - Markers take the time from the recorder clock (anchored on OBS
   `GetRecordStatus`), minus the pre-roll; screenshots via
   `SaveSourceScreenshot` (full-resolution PNG).
-- `finaliseSession`: renames OBS's file to `recording.mp4`, closes an open
-  range at the end, saves.
+- `endSession` ends a session exactly once, whoever asks first (Stop, OBS
+  stopping, lost connection, quit); markers and hotkeys are refused meanwhile.
+  `finaliseSession` renames OBS's file to `recording.mp4` (`stop()` waits for
+  OBS's STOPPED event, when the file is complete), closes an open range at the
+  end, saves.
+- No path from OBS (crash, lost connection) or a file still busy: the newest
+  `.mp4` in the session folder is adopted later (`recoverRecording`, when the
+  review opens and at startup). If only the connection dropped, the app
+  reconnects (every 5 s for a minute) and `reattachRecording` continues the
+  session OBS is still recording into.
+- Every obs-websocket request has a time limit (10 s; 30 s for profile
+  switches and StopRecord). Setup changes run one at a time; `configure`
+  re-enters the app's profile/collection first if the trainer switched OBS
+  away. Pauses in OBS freeze the marker clock.
+- Marker numbers and note file numbers are never reused within a session;
+  note audio is written with `wx`, so no file is ever overwritten.
 - A category hotkey toggles that category on the latest marker.
 - The trainer's OBS profile/collection is stored in settings
-  (`obsPreviousWorkspace`) and restored on quit, also after a crash. TRS never
-  switches profile while OBS records or streams.
+  (`obsPreviousWorkspace`, each half on its own) and restored on quit, also
+  after a crash. TRS never switches profile while OBS records, streams or runs
+  the virtual camera or replay buffer.
 
 ## Voice notes
 
@@ -103,7 +134,14 @@ The hidden `#audio` window keeps the microphone open for the whole session
 signals when it is ready (`audio:ready`). Push-to-talk down → capture starts,
 OBS microphones marked "mute while dictating" are muted; up → WAV sent to the
 main process, saved in `notes/`, queued for transcription. Taps < 300 ms are
-ignored (and a marker created only for them is removed).
+ignored (and a marker created only for them is removed). The release waits
+for the start to finish (`Dictation.started`), so muted OBS sources are always
+unmuted; a dictation ends by itself after 3 minutes, and a Companion
+push-to-talk ends when that device disconnects (ping heartbeat).
+
+Open/close of the microphone carry a generation number: a stream that opens
+after the session ended is closed at once. An unplugged microphone
+(`ended`) is reported and reopened (same name, else the Windows default).
 
 Microphone device ids are per origin (dev server vs packaged app) and change
 with drivers: `openMicrophone` tries the saved id, then the same name, then
@@ -117,14 +155,26 @@ player commands from other views. It never renders note text. Full-window
 mode only changes classes (the video element must survive). Zoom/pan is a CSS
 transform with a native non-passive wheel listener.
 
+Privacy of notes on screen: the notes window and the status window use
+`setContentProtection` (excluded from OBS and Discord capture); the main
+window does too while recording only, since the review is meant to be
+shared. The notes window avoids the recorded monitor.
+
 ## Companion security
 
 - Listens on 127.0.0.1 by default; LAN access (0.0.0.0) is opt-in.
 - Pairing link `/pair?token=…` (QR code) returns a page that sets an
   `HttpOnly; SameSite=Lax` cookie and continues to `/` (camera-app links are
   cross-site; a redirect lost the cookie on some browsers).
-- Every page, file and WebSocket needs the cookie (timing-safe compare); the
-  WebSocket also checks `Origin`. A new token unpairs all devices.
+- Every page, file and WebSocket needs the cookie (constant-time compare of
+  SHA-256 digests, so any input length is safe); the WebSocket also checks
+  `Origin`. A new token unpairs all devices.
+- Requests must arrive through 127.0.0.1 or a real network adapter (VPN and
+  VM adapters are refused). Malformed requests are answered with 4xx and can
+  never throw in the main process; media streams use `pipeline`, so an
+  aborted download closes the file (an open file blocks renaming the folder).
+- The QR code and link are hidden while a review is open (the main window may
+  be shared) until the trainer asks for them.
 - `/media/` serves only files inside the sessions folder.
 - Detects a Public Windows network profile (firewall blocks inbound) and warns.
 - Logs `/` and `/pair` requests with the user agent, and page errors reported
@@ -151,7 +201,9 @@ transform with a native non-passive wheel listener.
   or Exam; older sessions may hold other values).
 - `renameSessionFolder` applies the naming again after "Edit details"; it
   also moves v1.0-style sessions (time in the name, `screenshots/`) to the new
-  names and rewrites screenshot paths.
+  names and rewrites screenshot paths. It saves after each step, so
+  session.json always matches the folders even if a step fails; a change of
+  capitals only renames in place. Names are capped at 80 characters.
 - The list is sorted by date, then `createdAt` (names carry no time of day).
 
 `session.json` is `SessionFile` in src/shared/types.ts (`schemaVersion: 1`);
@@ -168,7 +220,13 @@ transform with a native non-passive wheel listener.
   into it (`releaseType: draft`), then publish — avoids duplicate releases.
   GitHub once started the v1.1.0 workflow twice (two drafts, one left behind):
   runs are now serialised with `concurrency` and a run exits early when the
-  release is already published.
+  release is already published. The run fails if the tag doesn't match
+  package.json's version, reuses the draft of a failed run, and publishes only
+  after checking that latest.yml, the installer and the blockmap were uploaded
+  and that latest.yml's sha512 matches the installer. Actions are pinned by
+  commit; the token is given only to the steps that need it.
+- Electron fuses (electron-builder.yml): no run-as-Node, no NODE_OPTIONS or
+  inspector arguments, app.asar only and with integrity validation.
 - The app icon is `build/icon.png` (512 px, rendered from the division
   symbol); electron-builder makes the .ico. The executable's copyright comes
   from `copyright` in electron-builder.yml.

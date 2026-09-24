@@ -116,7 +116,9 @@ function CompanionButton({
         <label className="flex items-center gap-3 text-sm">
           <Switch
             checked={settings.lan}
-            onCheckedChange={(lan) => void window.api.saveCompanionSettings({ ...settings, lan })}
+            onCheckedChange={(lan) =>
+              void window.api.saveCompanionSettings({ lan }).catch((error: unknown) => console.error(error))
+            }
           />
           Allow a tablet or phone on the same network
         </label>
@@ -157,6 +159,8 @@ function ObsStatusButton({
   onOpenSetup?: () => void
 }): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
+  // A second click before "Connecting…" shows up would cut the first attempt short.
+  const [pending, setPending] = useState(false)
   const dot = <span className={`size-2 rounded-full ${OBS_DOT[status]}`} aria-hidden />
 
   if (status === 'connected' || status === 'connecting') {
@@ -172,9 +176,14 @@ function ObsStatusButton({
       <button
         className="flex h-7 items-center gap-2 rounded-sm bg-white/10 px-3 text-xs text-white/80 hover:text-white"
         title="Connect to OBS with the settings saved in Setup"
+        disabled={pending}
         onClick={() => {
           setError(null)
-          window.api.reconnectObs().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+          setPending(true)
+          window.api
+            .reconnectObs()
+            .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+            .finally(() => setPending(false))
         }}
       >
         {dot}
