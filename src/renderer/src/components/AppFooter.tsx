@@ -3,7 +3,7 @@ import symbolWhite from '../assets/it-symbol-white.svg'
 
 export const AUTHOR = 'Carmine (704798)'
 export const DIVISION = 'IVAO Italy Division'
-export const COPYRIGHT = `© 2026 ${AUTHOR} and the ${DIVISION}`
+export const COPYRIGHT = `© 2026 ${AUTHOR}`
 
 /** Credits at the bottom of every page of the app and of the Companion. */
 export function AppFooter({ version }: { version?: string }): React.JSX.Element {

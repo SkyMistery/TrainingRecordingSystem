@@ -19,7 +19,8 @@ Guidance for working on this repository (Training Recording System, TRS).
   Day/Night; the app uses the IVAO Italy division symbol supplied by the
   trainer (src/renderer/src/assets, build/icon.png), not the main IVAO logo;
   every page (app and Companion) ends with the credits footer "made by
-  Carmine (704798) and the IVAO Italy Division" + copyright (AppFooter).
+  Carmine (704798) and the IVAO Italy Division" + "© 2026 Carmine (704798)" (AppFooter); the
+  copyright holder (footer, LICENSE, exe) is Carmine alone.
 
 ## Commands
 

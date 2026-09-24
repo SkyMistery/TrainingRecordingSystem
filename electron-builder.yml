@@ -1,6 +1,6 @@
 appId: com.skymistery.trainingrecordingsystem
 productName: Training Recording System
-copyright: Copyright © 2026 Carmine (704798) and the IVAO Italy Division
+copyright: Copyright © 2026 Carmine (704798)
 directories:
   buildResources: build
   output: dist
