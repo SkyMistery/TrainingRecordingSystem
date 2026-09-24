@@ -19,8 +19,8 @@ import {
   TableRoot,
   TableRow
 } from '@ivao/atmosphere-react'
-import { Circle, CircleAlert, Ellipsis, FolderOpen, Play, RefreshCw, Settings2, Trash2 } from 'lucide-react'
-import type { AppState, SessionMetadata, SessionSummary } from '@shared/types'
+import { Circle, CircleAlert, Ellipsis, FolderOpen, Pencil, Play, RefreshCw, Settings2, Trash2 } from 'lucide-react'
+import type { AppState, SessionDetails, SessionMetadata, SessionSummary } from '@shared/types'
 import { FirstRunChecklist, useChecklist } from '../components/FirstRunChecklist'
 import { formatDuration, todayIso } from '../format'
 
@@ -125,11 +125,90 @@ function NewSessionForm({ onCancel, onStarted }: { onCancel: () => void; onStart
   )
 }
 
+/** Corrects typos in a recorded session; the folder is renamed to match. */
+function EditDetailsForm({ session, onClose }: { session: SessionSummary; onClose: () => void }): React.JSX.Element {
+  const [form, setForm] = useState<SessionDetails>({
+    traineeVid: session.metadata.traineeVid,
+    traineeName: session.metadata.traineeName,
+    position: session.metadata.position,
+    trainingType: session.metadata.trainingType
+  })
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  // Sessions recorded before v1.1 may have another type (e.g. "Checkout"): keep it selectable.
+  const types = SESSION_TYPES.some((type) => type.value === session.metadata.trainingType)
+    ? SESSION_TYPES
+    : [...SESSION_TYPES, { value: session.metadata.trainingType, label: session.metadata.trainingType }]
+  const set = (field: keyof SessionDetails) => (event: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((f) => ({ ...f, [field]: field === 'position' ? event.target.value.toUpperCase() : event.target.value }))
+  const valid = /^\d+$/.test(form.traineeVid.trim()) && form.position.trim() !== ''
+
+  const save = async (): Promise<void> => {
+    setSaving(true)
+    setError(null)
+    try {
+      await window.api.updateSessionDetails(session.folderName, form)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form
+      className="flex flex-col gap-4"
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (valid) void save()
+      }}
+    >
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="edit-trainee-vid">Trainee VID</Label>
+          <Input id="edit-trainee-vid" inputMode="numeric" value={form.traineeVid} onChange={set('traineeVid')} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="edit-trainee-name">Trainee name (optional)</Label>
+          <Input id="edit-trainee-name" value={form.traineeName} onChange={set('traineeName')} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="edit-position">Position</Label>
+          <Input id="edit-position" value={form.position} onChange={set('position')} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Session type</Label>
+          <Select
+            value={form.trainingType}
+            onValueChange={(trainingType) => setForm((f) => ({ ...f, trainingType }))}
+            items={types}
+          />
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        The session folder and its screenshots folder are renamed to match. Close File Explorer windows showing them
+        first.
+      </p>
+      {error && <Alert variant="destructive" Icon={CircleAlert} title="Could not save" description={error} />}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={!valid} isLoading={saving}>
+          Save
+        </Button>
+      </div>
+    </form>
+  )
+}
+
 export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSetup: () => void }): React.JSX.Element {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [listError, setListError] = useState<{ title: string; message: string } | null>(null)
   const [toDelete, setToDelete] = useState<SessionSummary | null>(null)
+  const [toEdit, setToEdit] = useState<SessionSummary | null>(null)
   const [deleting, setDeleting] = useState(false)
   const checklist = useChecklist(state)
 
@@ -282,6 +361,11 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
                         }
                         items={[
                           {
+                            label: 'Edit details…',
+                            icon: <Pencil className="size-4" aria-hidden />,
+                            onSelect: () => setToEdit(session)
+                          },
+                          {
                             label: 'Transcribe voice notes again',
                             icon: <RefreshCw className="size-4" aria-hidden />,
                             disabled: session.noteCount === 0,
@@ -305,6 +389,19 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
           )}
         </CardContent>
       </CardRoot>
+
+      <Dialog
+        open={toEdit !== null}
+        onOpenChange={(open) => !open && setToEdit(null)}
+        title="Edit session details"
+        description={
+          toEdit
+            ? `Recorded on ${toEdit.metadata.date}. Fix typos in the trainee, position or session type.`
+            : undefined
+        }
+      >
+        {toEdit && <EditDetailsForm key={toEdit.folderName} session={toEdit} onClose={() => setToEdit(null)} />}
+      </Dialog>
 
       <Dialog
         open={toDelete !== null}

@@ -19,6 +19,7 @@ import type {
   PlayerState,
   SessionCommandName,
   SessionCommands,
+  SessionDetails,
   SessionMetadata,
   SessionSummary,
   WhisperModelId
@@ -67,6 +68,9 @@ const api = {
   chooseSessionsFolder: () => invoke<void>('sessions:chooseFolder'),
   deleteSession: (folderName: string) => invoke<void>('session:delete', folderName),
   retranscribeSession: (folderName: string) => invoke<void>('session:retranscribe', folderName),
+  /** Returns the session's folder name after the rename. */
+  updateSessionDetails: (folderName: string, details: SessionDetails) =>
+    invoke<string>('session:updateDetails', folderName, details),
   onSessionsChanged: (listener: () => void) => subscribe('sessions:changed', listener),
   startSession: (metadata: SessionMetadata) => invoke<void>('session:start', metadata),
   stopSession: () => invoke<void>('session:stop'),

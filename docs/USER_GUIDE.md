@@ -179,6 +179,10 @@ saved immediately.
 
 From the **⋯** menu of a session in the list:
 
+- **Edit details…** — fix typos in the trainee VID or name, the position or the
+  session type. The session folder and its screenshots folder are renamed to
+  match (older sessions get the new folder names too). Close File Explorer
+  windows showing the session first.
 - **Transcribe voice notes again** — every note of the session, e.g. after
   downloading a better model. Text you edited by hand is kept.
 - **Delete session…** — moves the session folder (recording, screenshots,

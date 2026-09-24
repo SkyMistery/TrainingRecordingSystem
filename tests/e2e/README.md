@@ -11,7 +11,7 @@ it is not stored anywhere.
 | Script | Needs | What it checks |
 |---|---|---|
 | `review.cjs` | `TRS_REVIEW_SESSION=<folder name>` of a session with a recording, a range and notes; no OBS | Companion security (pairing, cookie, Origin, path escapes, allow-listed commands), HTTP ranges, Review via the real button, no notes in the review window, player commands and position sync, edits from the Companion, notes window buttons, reconnection, zoom, full window, speed |
-| `sessions.cjs` | nothing (own sessions folder in `%TEMP%`) | Note counts in the list, transcribe a session again (edited text kept), delete a session (Recycle Bin), path escapes refused |
+| `sessions.cjs` | nothing (own sessions folder in `%TEMP%`) | Note counts in the list, transcribe a session again (edited text kept), several categories per marker (v1.0 sessions converted), delete a session (Recycle Bin), path escapes refused, edit details (folders and screenshot paths renamed) |
 | `mic.cjs` | OBS password | Voice notes with a stale microphone id (found by name) and with an unknown microphone (Windows default + warning), from the hotkey and the button |
 | `notes.cjs` | OBS password; **close the app first** | Model download, push-to-talk, OBS mic muted while dictating, attach/new marker, tap ignored, transcription of `fixtures/note-en.wav` |
 | `markers.cjs` | OBS password; **close the app first** | Markers with pre-roll and screenshots, category hotkey, ranges, auto-repeat, media protocol |

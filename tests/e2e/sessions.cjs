@@ -1,5 +1,6 @@
 // End-to-end test of the sessions list actions: note counts, transcribing a
-// session's notes again, deleting a session (to the Recycle Bin). Runs an
+// session's notes again, several categories per marker, deleting a session
+// (to the Recycle Bin), correcting a session's details (folders renamed). Runs an
 // isolated app instance with its own sessions folder in %TEMP%: no OBS needed.
 const { spawn } = require('node:child_process')
 const { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs')
@@ -120,6 +121,10 @@ async function main() {
   const legacy = JSON.parse(readFileSync(legacyFile, 'utf8'))
   delete legacy.markers[0].categoryIds
   legacy.markers[0].categoryId = 'positive'
+  // ...and screenshots in "screenshots/".
+  mkdirSync(join(keep, 'screenshots'))
+  writeFileSync(join(keep, 'screenshots', 'm-0001.png'), 'png')
+  legacy.markers[0].screenshot = 'screenshots/m-0001.png'
   writeFileSync(legacyFile, JSON.stringify(legacy, null, 2))
   const remove = makeSession('2026-09-24_1100_000000_E2E_DELETE', 1)
 
@@ -190,6 +195,55 @@ async function main() {
       after.length === 1 && after[0].folderName === '2026-09-24_1000_000000_E2E_KEEP',
       after.map((s) => s.folderName).join(', ')
     )
+
+    // --- Correcting details: folders follow the new name -------------------------
+    const update = (folderName, details) =>
+      page.evaluate(
+        `window.api.updateSessionDetails(${JSON.stringify(folderName)}, ${JSON.stringify(details)}).then((name) => ({ name }), (e) => ({ error: e.message }))`
+      )
+    const badVid = await update('2026-09-24_1000_000000_E2E_KEEP', {
+      traineeVid: '12a',
+      traineeName: '',
+      position: 'LIRF_APP',
+      trainingType: 'Training'
+    })
+    check('a VID with letters is refused', !!badVid.error && existsSync(keep), badVid.error)
+
+    const renamed = await update('2026-09-24_1000_000000_E2E_KEEP', {
+      traineeVid: '123456',
+      traineeName: 'Mario Rossì',
+      position: 'lirf_twr',
+      trainingType: 'Exam'
+    })
+    const NEW = '2026-09-24_123456_Mario-Rossi_LIRF_TWR_Exam'
+    check('details saved, folder renamed', renamed.name === NEW, JSON.stringify(renamed))
+    const moved = join(SESSIONS, NEW)
+    check('old folder gone, new one has the notes', !existsSync(keep) && existsSync(join(moved, 'notes', 'n-0001.wav')))
+    const edited = JSON.parse(readFileSync(join(moved, 'session.json'), 'utf8'))
+    check(
+      'metadata updated (position in capitals)',
+      edited.metadata.traineeVid === '123456' &&
+        edited.metadata.traineeName === 'Mario Rossì' &&
+        edited.metadata.position === 'LIRF_TWR' &&
+        edited.metadata.trainingType === 'Exam',
+      JSON.stringify(edited.metadata)
+    )
+    check(
+      'screenshots moved to <session>_screen and paths updated',
+      edited.markers[0].screenshot === `${NEW}_screen/m-0001.png` &&
+        existsSync(join(moved, `${NEW}_screen`, 'm-0001.png')) &&
+        !existsSync(join(moved, 'screenshots')),
+      edited.markers[0].screenshot
+    )
+    const again = await update(NEW, {
+      traineeVid: '123456',
+      traineeName: 'Mario Rossì',
+      position: 'LIRF_TWR',
+      trainingType: 'Exam'
+    })
+    check('saving the same details keeps the folder', again.name === NEW, JSON.stringify(again))
+    const listed = await page.evaluate('window.api.listSessions()')
+    check('the list shows the new name', listed.length === 1 && listed[0].folderName === NEW)
   } finally {
     page?.close()
     app.kill()

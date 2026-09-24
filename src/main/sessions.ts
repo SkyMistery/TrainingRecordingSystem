@@ -22,19 +22,28 @@ function safeSegment(value: string): string {
     .slice(0, 32)
 }
 
+/** e.g. 2026-09-24_123456_Mario-Rossi_LIRF_APP_Training */
+function sessionFolderName(metadata: SessionMetadata): string {
+  return [metadata.date, metadata.traineeVid, metadata.traineeName, metadata.position, metadata.trainingType]
+    .map(safeSegment)
+    .filter(Boolean)
+    .join('_')
+}
+
+/** A folder path for the session that doesn't exist yet; a second session the same day gets "-2". */
+async function freeFolder(root: string, metadata: SessionMetadata): Promise<string> {
+  const name = sessionFolderName(metadata)
+  let folder = join(root, name)
+  for (let i = 2; await exists(folder); i++) folder = join(root, `${name}-${i}`)
+  return folder
+}
+
 export async function createSession(
   root: string,
   metadata: SessionMetadata
 ): Promise<{ folder: string; session: SessionFile }> {
   const now = new Date()
-  // e.g. 2026-09-24_123456_Mario-Rossi_LIRF_APP_Training; a second session the same day gets "-2".
-  const name = [metadata.date, metadata.traineeVid, metadata.traineeName, metadata.position, metadata.trainingType]
-    .map(safeSegment)
-    .filter(Boolean)
-    .join('_')
-
-  let folder = join(root, name)
-  for (let i = 2; await exists(folder); i++) folder = join(root, `${name}-${i}`)
+  const folder = await freeFolder(root, metadata)
   await mkdir(folder, { recursive: true })
 
   const session: SessionFile = {
@@ -91,6 +100,50 @@ export class SessionStore {
       next.catch(() => undefined)
     )
     return next
+  }
+}
+
+/**
+ * Gives a session folder (and its screenshots folder) the name its details
+ * call for, after they were corrected. Returns the new folder, or the same one
+ * when the name doesn't change. Screenshot paths in `session` are updated;
+ * the caller saves it.
+ */
+export async function renameSessionFolder(root: string, folder: string, session: SessionFile): Promise<string> {
+  const current = basename(folder)
+  // Keep "-2" style suffixes out of the comparison: the same details keep the same folder.
+  const wanted = sessionFolderName(session.metadata)
+  const target =
+    current === wanted || current.startsWith(`${wanted}-`) ? folder : await freeFolder(root, session.metadata)
+  if (target !== folder) await renameWithRetry(folder, target)
+
+  // Screenshots: v1.0 used "screenshots/", later versions "<session>_screen/".
+  const shotsDir = screenshotsDir(target)
+  const oldDirs = new Set(
+    session.markers.map((marker) => marker.screenshot?.split('/')[0]).filter((dir): dir is string => !!dir)
+  )
+  for (const dir of oldDirs) {
+    if (dir === shotsDir || !(await exists(join(target, dir)))) continue
+    if (await exists(join(target, shotsDir))) continue // never merge into an existing folder
+    await renameWithRetry(join(target, dir), join(target, shotsDir))
+    for (const marker of session.markers) {
+      if (marker.screenshot?.startsWith(`${dir}/`))
+        marker.screenshot = `${shotsDir}/${marker.screenshot.slice(dir.length + 1)}`
+    }
+  }
+  return target
+}
+
+/** Windows refuses to rename a folder for a moment while a file in it is being closed. */
+async function renameWithRetry(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(from, to)
+      return
+    } catch (error) {
+      if (attempt >= 8) throw error
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
   }
 }
 

@@ -173,6 +173,9 @@ export interface SessionFile {
   markers: Marker[]
 }
 
+/** Session details the trainer can correct after recording (typos); they also name the folder. */
+export type SessionDetails = Pick<SessionMetadata, 'traineeVid' | 'traineeName' | 'position' | 'trainingType'>
+
 export interface SessionSummary {
   id: string
   folder: string

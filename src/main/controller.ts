@@ -10,6 +10,7 @@ import type {
   PlayerState,
   SessionCommandName,
   SessionCommands,
+  SessionDetails,
   AudioLevels,
   AudioSourceKind,
   CaptureConfig,
@@ -34,7 +35,16 @@ import { openNotesWindow } from './notesWindow'
 import { GlobalHotkeys } from './hotkeys'
 import { ObsRecorder } from './recorder/ObsRecorder'
 import type { Recorder } from './recorder/Recorder'
-import { adoptRecording, createSession, listSessions, loadSession, screenshotsDir, SessionStore } from './sessions'
+import {
+  adoptRecording,
+  createSession,
+  listSessions,
+  loadSession,
+  renameSessionFolder,
+  saveSession,
+  screenshotsDir,
+  SessionStore
+} from './sessions'
 import { decryptSecret, encryptSecret, getSettings, updateSettings } from './settings'
 import { hideStatusWindow, showStatusWindow } from './statusWindow'
 import { Transcriber } from './transcriber'
@@ -262,6 +272,9 @@ export class Controller {
     handle('sessions:chooseFolder', () => this.chooseSessionsFolder())
     handle('session:delete', (folderName: string) => this.deleteSession(folderName))
     handle('session:retranscribe', (folderName: string) => this.retranscribeSession(folderName))
+    handle('session:updateDetails', (folderName: string, details: SessionDetails) =>
+      this.updateSessionDetails(folderName, details)
+    )
     handle('session:start', (metadata: SessionMetadata) => this.startSession(metadata))
     handle('session:stop', () => this.stopSession())
 
@@ -418,9 +431,10 @@ export class Controller {
     const folder = this.sessionFolder(folderName)
     if (this.active?.folder === folder) throw new Error('This session is being recorded')
     if (this.state.review?.folderName === folderName) throw new Error('Close the review of this session first')
-    if (this.transcriber.forget(folder)) {
+    if (this.transcriber.isTranscribing(folder)) {
       throw new Error('A voice note of this session is being transcribed: try again in a few seconds')
     }
+    this.transcriber.forget(folder)
     try {
       await shell.trashItem(folder)
     } catch (error) {
@@ -428,6 +442,49 @@ export class Controller {
       throw new Error('Could not move the session to the Recycle Bin. Close any program using its files and try again.')
     }
     this.broadcast('sessions:changed', null)
+  }
+
+  /**
+   * Corrects the trainee, position or session type of a recorded session and
+   * renames its folders to match. Returns the new folder name.
+   */
+  private async updateSessionDetails(folderName: string, details: SessionDetails): Promise<string> {
+    const folder = this.sessionFolder(folderName)
+    if (this.active?.folder === folder) throw new Error('This session is being recorded')
+    if (this.state.review?.folderName === folderName) throw new Error('Close the review of this session first')
+    if (this.transcriber.isTranscribing(folder)) {
+      throw new Error('A voice note of this session is being transcribed: try again in a few seconds')
+    }
+    const clean: SessionDetails = {
+      traineeVid: String(details.traineeVid ?? '').trim(),
+      traineeName: String(details.traineeName ?? '').trim(),
+      position: String(details.position ?? '')
+        .trim()
+        .toUpperCase(),
+      trainingType: String(details.trainingType ?? '').trim()
+    }
+    if (!/^\d+$/.test(clean.traineeVid)) throw new Error('The trainee VID must be a number')
+    if (!clean.position) throw new Error('The position is required')
+    if (!clean.trainingType) throw new Error('The session type is required')
+
+    this.transcriber.forget(folder)
+    const session = await this.store.update(folder, (current) => {
+      current.metadata = { ...current.metadata, ...clean }
+    })
+    let target = folder
+    try {
+      target = await renameSessionFolder(getSettings().sessionsDir, folder, session)
+      if (target !== folder) await saveSession(target, session)
+    } catch (error) {
+      console.error('Could not rename the session folder', error)
+      throw new Error(
+        'The details are saved, but the folder could not be renamed. Close any program using its files (e.g. File Explorer or a video player) and save again.'
+      )
+    } finally {
+      await this.transcriber.resume(target, session)
+      this.broadcast('sessions:changed', null)
+    }
+    return basename(target)
   }
 
   /** Transcribes every voice note of a session again, e.g. after downloading a better model. */

@@ -104,12 +104,16 @@ export class Transcriber {
     void this.process()
   }
 
-  /** Drops the queued notes of a session; true if one of its notes is being transcribed right now. */
-  forget(folder: string): boolean {
+  /** True while a note of this session is being transcribed. */
+  isTranscribing(folder: string): boolean {
+    return this.currentFolder === folder
+  }
+
+  /** Drops the queued notes of a session (it is being deleted or renamed). */
+  forget(folder: string): void {
     const before = this.queue.length
     this.queue.splice(0, this.queue.length, ...this.queue.filter((job) => job.folder !== folder))
     if (this.queue.length !== before) this.events.stateChanged()
-    return this.currentFolder === folder
   }
 
   /** Re-queues notes left pending (e.g. the app closed mid-queue) or waiting for a model. */
