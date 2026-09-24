@@ -102,9 +102,9 @@ Transcription runs on your PC: nothing is sent online.
      otherwise it creates a new marker.
    - Buttons on the recording page (and on the Companion) do the same.
 3. **Stop recording**. The session folder is named
-   `<date>_<trainee VID>_<trainee name>_<position>`, e.g.
-   `2026-09-24_123456_Mario-Rossi_LIRF_APP` (a second session with the same
-   trainee on the same day ends in `-2`). It contains `recording.mp4`,
+   `<date>_<trainee VID>_<trainee name>_<position>_<session type>`, e.g.
+   `2026-09-24_123456_Mario-Rossi_LIRF_APP_Training` (a second session with the
+   same trainee on the same day ends in `-2`). It contains `recording.mp4`,
    `session.json`, `notes/` and the screenshots folder, named like the
    session with `_screen` at the end so you can share it on its own.
    Sessions recorded before v1.1 keep their old names and `screenshots/`.

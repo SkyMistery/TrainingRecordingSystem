@@ -27,8 +27,8 @@ export async function createSession(
   metadata: SessionMetadata
 ): Promise<{ folder: string; session: SessionFile }> {
   const now = new Date()
-  // e.g. 2026-09-24_123456_Mario-Rossi_LIRF_APP; a second session the same day gets "-2".
-  const name = [metadata.date, metadata.traineeVid, metadata.traineeName, metadata.position]
+  // e.g. 2026-09-24_123456_Mario-Rossi_LIRF_APP_Training; a second session the same day gets "-2".
+  const name = [metadata.date, metadata.traineeVid, metadata.traineeName, metadata.position, metadata.trainingType]
     .map(safeSegment)
     .filter(Boolean)
     .join('_')
