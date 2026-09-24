@@ -1,12 +1,32 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Input, Label, Switch } from '@ivao/atmosphere-react'
-import { CircleAlert, ExternalLink, KeyRound, NotebookPen, ShieldAlert } from 'lucide-react'
+import { CircleAlert, ExternalLink, KeyRound, NotebookPen, QrCode, ShieldAlert } from 'lucide-react'
 import type { AppState, CompanionInfo, CompanionSettings } from '@shared/types'
 import { SetupSection, type SectionProps } from './SetupSection'
 
-/** QR code and link to pair a tablet or phone on the same network. */
-export function CompanionPairing({ info }: { info: CompanionInfo }): React.JSX.Element {
+/**
+ * QR code and link to pair a tablet or phone on the same network. While a
+ * review is open the main window may be shared on Discord, and the link is a
+ * secret: it stays hidden until the trainer asks for it.
+ */
+export function CompanionPairing({ info, concealed }: { info: CompanionInfo; concealed: boolean }): React.JSX.Element {
   const networkUrl = info.urls[1] ?? null
+  const [revealed, setRevealed] = useState(false)
+  // The network may have changed since the Companion started (Wi-Fi up later, new address).
+  useEffect(() => {
+    window.api.refreshCompanion().catch(() => undefined)
+  }, [])
+  if (concealed && !revealed) {
+    return (
+      <div className="flex flex-col items-start gap-2 text-sm">
+        <p>The QR code is hidden while a review is open: this window may be shared on Discord.</p>
+        <Button variant="outline" size="sm" onClick={() => setRevealed(true)}>
+          <QrCode className="size-4" aria-hidden />
+          Show the QR code
+        </Button>
+      </div>
+    )
+  }
   return (
     <div className="flex flex-wrap items-start gap-5">
       {info.qr && <img src={info.qr} alt="QR code to pair a device" className="size-48 rounded-md bg-white p-2" />}
@@ -83,7 +103,7 @@ export function CompanionCard({
             Allow a tablet or phone on the same network
           </label>
 
-          {settings.lan && <CompanionPairing info={info} />}
+          {settings.lan && <CompanionPairing info={info} concealed={state.review !== null} />}
 
           <div className="flex flex-wrap items-end gap-4">
             <div className="flex flex-col gap-1.5">

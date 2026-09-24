@@ -54,32 +54,35 @@ interface CompanionHooks {
 /** Virtual adapters (WSL, Hyper-V, VPNs, VMs) a tablet can't reach. */
 const VIRTUAL_ADAPTER = /vEthernet|WSL|Hyper-V|VirtualBox|VMware|Loopback|Bluetooth|TAP|Tailscale|ZeroTier/i
 
-/** Addresses of real network adapters, home-network ranges (192.168.x, 10.x) first. */
-function lanAddresses(): string[] {
-  const addresses = Object.entries(networkInterfaces())
+/** Real network adapters (name and address), home-network ranges (192.168.x, 10.x) first. */
+function lanAdapters(): { name: string; address: string }[] {
+  const adapters = Object.entries(networkInterfaces())
     .filter(([name]) => !VIRTUAL_ADAPTER.test(name))
-    .flatMap(([, nets]) => nets ?? [])
-    .filter((net) => net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254.'))
-    .map((net) => net.address)
+    .flatMap(([name, nets]) => (nets ?? []).map((net) => ({ name, net })))
+    .filter(({ net }) => net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254.'))
+    .map(({ name, net }) => ({ name, address: net.address }))
   const rank = (ip: string): number => (ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : 2)
-  return addresses.sort((x, y) => rank(x) - rank(y))
+  return adapters.sort((x, y) => rank(x.address) - rank(y.address))
 }
 
-/** Whether a connected Windows network uses the Public profile (inbound connections blocked). */
-function isPublicNetwork(): Promise<boolean> {
+/** Whether Windows uses the Public profile (inbound connections blocked) on this adapter. */
+function isPublicNetwork(adapter: string): Promise<boolean> {
   return new Promise((resolve) => {
     execFile(
       'powershell',
       [
         '-NoProfile',
         '-Command',
-        '@(Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq "Public" }).Count'
+        `@(Get-NetConnectionProfile -InterfaceAlias '${adapter.replace(/'/g, "''")}' | Where-Object { $_.NetworkCategory -eq "Public" }).Count`
       ],
       { windowsHide: true, timeout: 10_000 },
       (error, stdout) => resolve(!error && Number(stdout.trim()) > 0)
     )
   })
 }
+
+/** Unanswered pings after which a device is considered gone (phone asleep, Wi-Fi lost). */
+const HEARTBEAT_MS = 15_000
 
 /** Constant-time comparison; hashing first gives equal lengths whatever the client sent. */
 function sameToken(a: string | undefined, b: string): boolean {
@@ -129,6 +132,12 @@ export class CompanionServer {
   private qr: string | null = null
   private urls: string[] = []
   private publicNetwork = false
+  /** Restarts run one at a time, or two could fight over the port. */
+  private restarting: Promise<void> = Promise.resolve()
+  private heartbeat: NodeJS.Timeout | null = null
+  private readonly alive = new WeakSet<WebSocket>()
+  /** The device holding the push-to-talk button: its note ends if it goes away. */
+  private noteOwner: WebSocket | null = null
 
   constructor(
     private readonly hooks: CompanionHooks,
@@ -152,7 +161,35 @@ export class CompanionServer {
     return `http://${host}:${this.settings().port}/pair?token=${this.token()}`
   }
 
-  async restart(): Promise<void> {
+  restart(): Promise<void> {
+    const next = this.restarting.then(
+      () => this.doRestart(),
+      () => this.doRestart()
+    )
+    this.restarting = next.catch(() => undefined)
+    return next
+  }
+
+  /** Addresses, network profile and QR code again (the network may have changed since the start). */
+  async refreshNetwork(): Promise<void> {
+    if (!this.server) return
+    const settings = this.settings()
+    const adapters = settings.lan ? lanAdapters() : []
+    this.urls = ['127.0.0.1', ...adapters.map((adapter) => adapter.address)].map((host) => this.pairUrl(host))
+    this.publicNetwork = adapters[0] ? await isPublicNetwork(adapters[0].name) : false
+    // The QR code is for the tablet: without a network address there is nothing it could open.
+    const target = settings.lan ? this.urls[1] : this.urls[0]
+    this.qr = target ? await QRCode.toDataURL(target, { margin: 1, width: 240 }) : null
+    this.hooks.changed()
+  }
+
+  /** Requests must arrive through this PC or a real network adapter, not a VPN or VM adapter. */
+  private reachedThrough(req: IncomingMessage): boolean {
+    const local = (req.socket.localAddress ?? '').replace(/^::ffff:/, '')
+    return local === '127.0.0.1' || lanAdapters().some((adapter) => adapter.address === local)
+  }
+
+  private async doRestart(): Promise<void> {
     await this.stop()
     const settings = this.settings()
     if (!settings.enabled) {
@@ -174,7 +211,10 @@ export class CompanionServer {
       let allowed = false
       try {
         allowed =
-          req.url === '/ws' && sameToken(cookieToken(req), this.token()) && origin === `http://${req.headers.host}`
+          req.url === '/ws' &&
+          this.reachedThrough(req) &&
+          sameToken(cookieToken(req), this.token()) &&
+          origin === `http://${req.headers.host}`
       } catch {
         allowed = false
       }
@@ -193,11 +233,18 @@ export class CompanionServer {
       this.server = server
       this.sockets = sockets
       this.error = null
-      const hosts = ['127.0.0.1', ...(settings.lan ? lanAddresses() : [])]
-      this.urls = hosts.map((host) => this.pairUrl(host))
-      this.publicNetwork = settings.lan ? await isPublicNetwork() : false
-      // The QR code is for the tablet: the best network address, or this PC.
-      this.qr = await QRCode.toDataURL(this.urls[1] ?? this.urls[0], { margin: 1, width: 240 })
+      // Pings find devices that went away without closing (a sleeping phone).
+      this.heartbeat = setInterval(() => {
+        for (const client of sockets.clients) {
+          if (!this.alive.has(client)) {
+            client.terminate()
+            continue
+          }
+          this.alive.delete(client)
+          client.ping()
+        }
+      }, HEARTBEAT_MS)
+      await this.refreshNetwork()
     } catch (error) {
       this.error =
         (error as NodeJS.ErrnoException).code === 'EADDRINUSE'
@@ -211,14 +258,21 @@ export class CompanionServer {
   }
 
   async stop(): Promise<void> {
-    for (const client of this.sockets?.clients ?? []) client.close()
+    if (this.heartbeat) clearInterval(this.heartbeat)
+    this.heartbeat = null
+    // Terminate, not close: a sleeping phone would hold the close handshake for 30 s.
+    for (const client of this.sockets?.clients ?? []) client.terminate()
     this.sockets?.close()
     const server = this.server
     this.server = null
     this.sockets = null
     this.urls = []
     this.qr = null
-    if (server) await new Promise<void>((done) => server.close(() => done()))
+    if (server) {
+      const closed = new Promise<void>((done) => server.close(() => done()))
+      server.closeAllConnections()
+      await closed
+    }
   }
 
   /** Sends the current state to every connected device. */
@@ -230,9 +284,18 @@ export class CompanionServer {
 
   private onClient(ws: WebSocket): void {
     ws.on('error', (error) => console.warn('[companion] socket error', error.message))
+    this.alive.add(ws)
+    ws.on('pong', () => this.alive.add(ws))
     ws.send(JSON.stringify({ type: 'state', state: this.hooks.state() }))
     this.hooks.changed()
-    ws.on('close', () => this.hooks.changed())
+    ws.on('close', () => {
+      // Its push-to-talk release will never arrive: end the note now.
+      if (this.noteOwner === ws) {
+        this.noteOwner = null
+        this.hooks.execute('stopNote', []).catch(() => undefined)
+      }
+      this.hooks.changed()
+    })
     ws.on('message', (data) => {
       let message: { id?: number; name?: SessionCommandName; args?: unknown[] }
       try {
@@ -245,6 +308,15 @@ export class CompanionServer {
         ws.send(JSON.stringify({ type: 'result', id, error: 'Unknown command' }))
         return
       }
+      if (name === 'startNote') this.noteOwner = ws
+      if (name === 'stopNote') {
+        // Another device releasing its button must not end this device's note.
+        if (this.noteOwner && this.noteOwner !== ws && this.noteOwner.readyState === this.noteOwner.OPEN) {
+          ws.send(JSON.stringify({ type: 'result', id }))
+          return
+        }
+        this.noteOwner = null
+      }
       this.hooks
         .execute(name, args)
         .then(() => ws.send(JSON.stringify({ type: 'result', id })))
@@ -255,6 +327,10 @@ export class CompanionServer {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.reachedThrough(req)) {
+      res.writeHead(403).end()
+      return
+    }
     // A request line like "GET //x" is not a valid path for URL.
     if (!req.url?.startsWith('/') || req.url.startsWith('//')) {
       res.writeHead(400).end()

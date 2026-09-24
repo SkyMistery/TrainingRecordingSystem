@@ -21,6 +21,14 @@ interface Capture {
 let capture: Capture | null = null
 let ring: Float32Array[] = []
 let collecting: Float32Array[] | null = null
+/**
+ * Bumped by every open and close. Opening waits for Windows; if the session
+ * ended (or a new open started) meanwhile, the late stream is dropped instead
+ * of keeping the microphone on until the next session.
+ */
+let generation = 0
+/** The device of the open session, to reopen it after it was unplugged. */
+let wanted: { deviceId: string; label: string } | null = null
 
 function ringSamples(): number {
   return ring.reduce((sum, chunk) => sum + chunk.length, 0)
@@ -28,15 +36,28 @@ function ringSamples(): number {
 
 async function open(deviceId: string, label: string): Promise<void> {
   close()
+  wanted = { deviceId, label }
+  const current = generation
   const { stream, fallback } = await openMicrophone(deviceId, label, {
     channelCount: 1,
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true
   })
+  if (current !== generation) {
+    stream.getTracks().forEach((track) => track.stop())
+    return
+  }
   void window.api.reportAudioStatus(
     fallback ? `“${label}” was not found: voice notes use the Windows default microphone.` : null
   )
+  // Unplugged mid-session: say so (notes would be silent) and switch to what is available.
+  stream.getAudioTracks()[0]?.addEventListener('ended', () => {
+    if (current !== generation || !wanted) return
+    void window.api.reportAudioStatus(`The microphone “${label}” was disconnected: reconnecting…`)
+    const { deviceId: id, label: name } = wanted
+    open(id, name).catch((error: unknown) => void window.api.reportAudioStatus(describeMediaError(error)))
+  })
   // The context resamples the microphone to 16 kHz for us.
   const context = new AudioContext({ sampleRate: SAMPLE_RATE })
   const source = context.createMediaStreamSource(stream)
@@ -56,6 +77,7 @@ async function open(deviceId: string, label: string): Promise<void> {
 }
 
 function close(): void {
+  generation++
   if (!capture) return
   capture.processor.disconnect()
   capture.stream.getTracks().forEach((track) => track.stop())
@@ -98,6 +120,7 @@ export function AudioView(): null {
           case 'stop':
             return stop(command.token)
           case 'close':
+            wanted = null
             return close()
         }
       }

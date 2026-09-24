@@ -24,7 +24,7 @@ export interface Settings {
   /** Secret that pairs Companion devices; a new one unpairs them all. */
   companionToken: string
   /** Trainer's own OBS profile and scene collection, to restore on exit. */
-  obsPreviousWorkspace: { profile: string; collection: string } | null
+  obsPreviousWorkspace: { profile: string | null; collection: string | null } | null
   /** Last position of the status window, in screen coordinates. */
   statusWindowPosition: { x: number; y: number } | null
 }

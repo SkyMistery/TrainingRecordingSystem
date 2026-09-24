@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { copyFile, mkdir, readdir, readFile, rename } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { copyFile, mkdir, readdir, readFile, rename, stat } from 'node:fs/promises'
+import { basename, isAbsolute, join } from 'node:path'
 import type { SessionFile, SessionMetadata, SessionSummary } from '../shared/types'
 import { exists, renameWithRetry, writeJsonAtomic } from './files'
 
@@ -224,6 +224,25 @@ export async function listSessions(root: string): Promise<SessionSummary[]> {
   return sessions
     .sort((a, b) => b.metadata.date.localeCompare(a.metadata.date) || b.createdAt.localeCompare(a.createdAt))
     .map(({ createdAt: _createdAt, ...summary }) => summary)
+}
+
+/**
+ * The recording of a session whose file wasn't moved into place: OBS crashed
+ * or the connection was lost before it reported the file, or the file was
+ * still busy. Older versions stored OBS's own path. Null if there is none.
+ */
+export async function findRecordingFile(folder: string, stored: string | null): Promise<string | null> {
+  if (await exists(join(folder, RECORDING_FILE))) return join(folder, RECORDING_FILE)
+  if (stored && isAbsolute(stored) && (await exists(stored))) return stored
+  // OBS names its files after the date and time; keep the newest one.
+  const candidates: { path: string; modified: number }[] = []
+  for (const name of await readdir(folder).catch(() => [] as string[])) {
+    if (!/\.mp4$/i.test(name)) continue
+    const path = join(folder, name)
+    const info = await stat(path).catch(() => null)
+    if (info?.isFile()) candidates.push({ path, modified: info.mtimeMs })
+  }
+  return candidates.sort((a, b) => b.modified - a.modified)[0]?.path ?? null
 }
 
 /**

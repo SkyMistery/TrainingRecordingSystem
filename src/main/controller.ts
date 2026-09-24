@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, rm, unlink, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type {
   AppState,
@@ -39,6 +39,8 @@ import type { Recorder } from './recorder/Recorder'
 import {
   adoptRecording,
   createSession,
+  findRecordingFile,
+  RECORDING_FILE,
   listSessions,
   loadSession,
   renameSessionFolder,
@@ -69,10 +71,18 @@ interface Dictation {
   mutedSourceIds: string[]
   /** Settles when the start (capture, marker, muting) is complete; the stop waits for it. */
   started: Promise<void>
+  limit: NodeJS.Timeout | null
 }
 
 /** Keeps the recording muted a moment longer: the voice trails off after release. */
 const UNMUTE_DELAY_MS = 300
+/** Longest text accepted for a note (a few pages). */
+const MAX_NOTE_TEXT = 20_000
+/** A dictation whose release never arrives (phone asleep, key stuck) ends on its own. */
+const MAX_DICTATION_MS = 3 * 60_000
+/** After OBS drops the connection during a recording, try to get it back for a minute. */
+const RECONNECT_DELAY_MS = 5_000
+const RECONNECT_ATTEMPTS = 12
 
 /**
  * Owns the application state. Windows (and later the Companion page) are views:
@@ -85,6 +95,7 @@ export class Controller {
   private dictation: Dictation | null = null
   /** Set while a session is being ended (see endSession). */
   private ending: Promise<void> | null = null
+  private reconnectTimer: NodeJS.Timeout | null = null
   private state: AppState
   private readonly store = new SessionStore((folder) =>
     this.active?.folder === folder ? this.active.session : undefined
@@ -116,16 +127,26 @@ export class Controller {
     toggleMarkerCategory: async (folderName, markerId, categoryId) => {
       await this.editSession(folderName, (session) => {
         const marker = this.findMarker(session, markerId)
-        marker.categoryIds = marker.categoryIds.includes(categoryId)
-          ? marker.categoryIds.filter((id) => id !== categoryId)
-          : [...marker.categoryIds, categoryId]
+        if (marker.categoryIds.includes(categoryId)) {
+          marker.categoryIds = marker.categoryIds.filter((id) => id !== categoryId)
+          return
+        }
+        // Commands also come from the Companion page: only known categories are added.
+        if (!getSettings().markers.categories.some((category) => category.id === categoryId)) {
+          throw new Error('Unknown category')
+        }
+        marker.categoryIds = [...marker.categoryIds, categoryId]
       })
       this.feedback('category')
     },
     setMarkerTimes: (folderName, markerId, times) =>
       this.editSession(folderName, (session) => {
         const marker = this.findMarker(session, markerId)
-        const limit = session.recording?.durationMs ?? Number.MAX_SAFE_INTEGER
+        const valid = (value: unknown): boolean => value === undefined || Number.isFinite(value)
+        if (!times || !valid(times.timeMs) || !(times.endMs === null || valid(times.endMs))) {
+          throw new Error('Invalid marker time')
+        }
+        const limit = session.recording?.durationMs || Number.MAX_SAFE_INTEGER
         const timeMs = Math.round(Math.min(limit, Math.max(0, times.timeMs ?? marker.timeMs)))
         let endMs = times.endMs === undefined ? marker.endMs : times.endMs
         if (marker.kind === 'range' && endMs !== null) endMs = Math.round(Math.min(limit, Math.max(timeMs, endMs)))
@@ -136,6 +157,8 @@ export class Controller {
     setNoteText: (folderName, markerId, noteId, text) =>
       this.editSession(folderName, (session) => {
         const note = this.findNote(session, markerId, noteId)
+        if (text !== null && (typeof text !== 'string' || text.length > MAX_NOTE_TEXT))
+          throw new Error('Invalid note text')
         note.text = text !== null && text.trim() !== (note.transcript ?? '') ? text.trim() : null
       }),
     deleteNote: (folderName, markerId, noteId) => this.deleteNote(folderName, markerId, noteId),
@@ -175,13 +198,18 @@ export class Controller {
         return { url: `ws://${host}:${port}`, password: decryptSecret(passwordEncrypted) }
       },
       {
-        onDisconnected: (reason) => {
+        onDisconnected: (reason, durationMs) => {
           this.patch({ obs: { status: 'error', error: reason, version: null } })
-          this.endSession(async () => ({ outputPath: null })).catch((error: unknown) => console.error(error))
+          if (!this.active) return
+          this.endSession(async () => ({ outputPath: null, durationMs })).catch((error: unknown) =>
+            console.error(error)
+          )
+          // OBS may still be recording (only the connection dropped): reconnect and pick the session up again.
+          this.scheduleReconnect(1)
         },
         onLevels: (levels) => this.broadcast('audio:levels', levels),
-        onRecordingStopped: (outputPath) =>
-          this.endSession(async () => ({ outputPath })).catch((error: unknown) => console.error(error))
+        onRecordingStopped: (outputPath, durationMs) =>
+          this.endSession(async () => ({ outputPath, durationMs })).catch((error: unknown) => console.error(error))
       },
       {
         get: () => getSettings().obsPreviousWorkspace,
@@ -217,6 +245,7 @@ export class Controller {
 
   /** Each step runs even if an earlier one fails, so OBS still gets the trainer's profile back. */
   async shutdown(): Promise<void> {
+    this.cancelReconnect()
     this.hotkeys.stop()
     await this.stopSession().catch((error: unknown) => console.error('Could not stop the recording', error))
     this.audio.destroy()
@@ -243,6 +272,7 @@ export class Controller {
       return { host, port, hasPassword: Boolean(passwordEncrypted) }
     })
     handle('obs:connect', async (config: ObsConnectionConfig) => {
+      this.refuseWhileRecording()
       const current = getSettings().obs
       await updateSettings({
         obs: {
@@ -256,7 +286,10 @@ export class Controller {
     })
 
     // From the top bar: connect again with the saved host, port and password.
-    handle('obs:reconnect', () => this.connectObs())
+    handle('obs:reconnect', () => {
+      this.refuseWhileRecording()
+      return this.connectObs()
+    })
 
     handle('capture:listDisplays', () => this.requireObs().listDisplays())
     handle('capture:listAudioTargets', (kind: AudioSourceKind) => this.requireObs().listAudioTargets(kind))
@@ -323,6 +356,7 @@ export class Controller {
       await updateSettings({ companionToken: newCompanionToken() })
       await this.companion.restart()
     })
+    handle('companion:refresh', () => this.companion.refreshNetwork())
     handle('companion:openWindow', () =>
       openNotesWindow(this.requireCompanion().pairUrl(), this.state.capture.display?.name)
     )
@@ -342,7 +376,28 @@ export class Controller {
     return this.recorder
   }
 
+  /** Reconnecting drops the connection that the recording depends on. */
+  private refuseWhileRecording(): void {
+    if (this.active) throw new Error('Stop the recording before connecting to OBS again')
+  }
+
+  private scheduleReconnect(attempt: number): void {
+    this.cancelReconnect()
+    if (attempt > RECONNECT_ATTEMPTS) return
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      if (this.recorder.isConnected() || this.state.obs.status === 'connecting') return
+      this.connectObs().catch(() => this.scheduleReconnect(attempt + 1))
+    }, RECONNECT_DELAY_MS)
+  }
+
+  private cancelReconnect(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
+  }
+
   private async connectObs(): Promise<void> {
+    this.cancelReconnect()
     await this.recorder.disconnect().catch(() => undefined)
     this.patch({ obs: { status: 'connecting', error: null, version: null } })
     try {
@@ -352,8 +407,9 @@ export class Controller {
       this.patch({ obs: { status: 'error', error: describeObsError(error), version: null } })
       throw new Error(describeObsError(error))
     }
+    await this.reattachRecording().catch((error: unknown) => console.error('Could not resume the recording', error))
     // Applied again before every recording, so a failure here isn't fatal.
-    if (this.state.capture.display) {
+    if (this.state.capture.display && !this.active) {
       await this.withBusy(() => this.recorder.configure(this.state.capture)).catch((error: unknown) =>
         console.warn('Capture settings not applied yet:', error instanceof Error ? error.message : error)
       )
@@ -363,12 +419,21 @@ export class Controller {
   // --- Sessions ------------------------------------------------------------------
 
   private async startSession(metadata: SessionMetadata): Promise<void> {
-    if (this.active) throw new Error('A session is already being recorded')
+    if (this.active || this.ending) throw new Error('A session is already being recorded')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(metadata?.date ?? ''))) throw new Error('Enter the date of the session')
     const recorder = this.requireObs()
-    const capture = this.state.capture
+    let capture = this.state.capture
     if (!capture.display) throw new Error('Choose the display to record in Setup first')
 
     await this.withBusy(async () => {
+      // The monitor may have been unplugged or changed resolution since Setup.
+      const display = (await recorder.listDisplays()).find((item) => item.id === capture.display!.id)
+      if (!display) throw new Error('The monitor chosen in Setup is not connected: choose it again in Setup')
+      if (display.width !== capture.display!.width || display.height !== capture.display!.height) {
+        capture = { ...capture, display }
+        this.patch({ capture })
+        await updateSettings({ capture })
+      }
       await recorder.configure(capture)
       const { folder, session } = await createSession(getSettings().sessionsDir, metadata)
       try {
@@ -384,19 +449,61 @@ export class Controller {
         durationMs: 0,
         display: { name: capture.display!.name, width: capture.display!.width, height: capture.display!.height }
       }
-      this.active = { folder, session, openRangeId: null, nextMarkerNumber: 1 }
-      this.onRecordingChanged(true)
-      await this.persist()
+      await this.activate(folder, session)
       // Only a convenience for the next session: a failure must not break this one.
       await updateSettings({ trainerVid: metadata.trainerVid }).catch((error: unknown) => console.error(error))
     })
+  }
+
+  /** Makes a session the one being recorded (a new one, or one picked up again after a lost connection). */
+  private async activate(folder: string, session: SessionFile): Promise<void> {
+    const lastNumber = Math.max(0, ...session.markers.map((marker) => marker.number))
+    this.active = { folder, session, openRangeId: null, nextMarkerNumber: lastNumber + 1 }
+    this.onRecordingChanged(true)
+    await this.persist()
     // Kept open for the whole session so push-to-talk starts instantly.
     const { micDeviceId, micLabel } = getSettings().notes
     this.audio.open(micDeviceId, micLabel).catch((error: unknown) => {
       console.error('Could not open the microphone', error)
     })
     this.publishRecording()
-    if (getSettings().markers.statusWindow) showStatusWindow(capture.display.name)
+    if (getSettings().markers.statusWindow) showStatusWindow(this.state.capture.display?.name)
+  }
+
+  /**
+   * After a lost connection (or a restart of the app), OBS may still be
+   * recording one of the sessions: continue it instead of leaving it orphaned.
+   */
+  private async reattachRecording(): Promise<void> {
+    if (this.active || this.ending) return
+    const running = await this.recorder.recordingInProgress()
+    if (!running) return
+    const folder = sessionFilePath([basename(running.outputDir)])
+    if (!folder || folder.toLowerCase() !== resolve(running.outputDir).toLowerCase()) return
+    const session = await loadSession(folder).catch(() => null)
+    if (!session?.recording) return
+    console.info(`Continuing the recording of ${basename(folder)}`)
+    this.recorder.continueRecording(running.durationMs)
+    await this.activate(folder, session)
+  }
+
+  /**
+   * A recording that wasn't moved into its session folder when it stopped
+   * (OBS crashed, the connection was lost, the file was busy) is picked up
+   * when the session is opened or the app starts.
+   */
+  private async recoverRecording(folder: string): Promise<void> {
+    if (this.active?.folder === folder) return
+    const session = await loadSession(folder)
+    const recording = session.recording
+    if (!recording || recording.file === RECORDING_FILE) return
+    const found = await findRecordingFile(folder, recording.file)
+    if (!found) return
+    const file = await adoptRecording(folder, found)
+    await this.store.update(folder, (current) => {
+      if (current.recording) current.recording.file = file
+    })
+    console.info(`Recording of ${basename(folder)} recovered`)
   }
 
   /** Stop pressed in the app (or quitting): stops OBS, then finalises. */
@@ -446,12 +553,14 @@ export class Controller {
     const recording = active.session.recording
     if (recording) {
       recording.durationMs = Math.round(durationMs ?? Date.now() - Date.parse(recording.startedAt))
-      if (outputPath) {
+      // Without a path from OBS (crash, lost connection) the file is looked for in the folder.
+      const file = outputPath ?? (await findRecordingFile(active.folder, null))
+      if (file) {
         try {
-          recording.file = await adoptRecording(active.folder, outputPath)
+          recording.file = await adoptRecording(active.folder, file)
         } catch (error) {
+          // Still busy (e.g. OBS still writing it): recovered when the session is opened.
           console.error('Could not move the recording into the session folder', error)
-          recording.file = outputPath
         }
       }
       // A range still open when recording stops ends with the recording.
@@ -734,7 +843,10 @@ export class Controller {
       recordedAtMs: now,
       createdMarker: !marker,
       mutedSourceIds: [],
-      started: Promise.resolve()
+      started: Promise.resolve(),
+      limit: setTimeout(() => {
+        if (this.dictation === dictation) this.run(() => this.stopNote())
+      }, MAX_DICTATION_MS)
     }
     // The release can arrive before this finishes: stopNote waits for `started`.
     dictation.started = (async () => {
@@ -771,6 +883,7 @@ export class Controller {
     const active = this.active
     if (!dictation || !active) return
     this.dictation = null
+    if (dictation.limit) clearTimeout(dictation.limit)
     this.publishRecording()
     this.feedback('noteEnd')
     const started = await dictation.started.then(
@@ -902,6 +1015,7 @@ export class Controller {
   private async openReview(folderName: string): Promise<void> {
     const folder = this.sessionFolder(folderName)
     if (this.active?.folder === folder) throw new Error('This session is still being recorded')
+    await this.recoverRecording(folder).catch((error: unknown) => console.error('Recording not recovered', error))
     const session = await this.store.update(folder, () => undefined)
     this.patch({
       review: {
@@ -931,9 +1045,10 @@ export class Controller {
     }
   }
 
-  /** Transcribes notes left over from a previous run (app closed mid-queue). */
+  /** Transcribes notes left over from a previous run (app closed mid-queue) and recovers orphaned recordings. */
   private async resumeTranscriptions(): Promise<void> {
     for (const summary of await listSessions(getSettings().sessionsDir)) {
+      await this.recoverRecording(summary.folder).catch(() => undefined)
       const session = await loadSession(summary.folder).catch(() => null)
       if (session) await this.transcriber.resume(summary.folder, session)
     }

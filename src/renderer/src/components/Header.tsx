@@ -44,7 +44,7 @@ interface HeaderProps {
   themePreference: ThemePreference
   onThemeChange: (preference: ThemePreference) => void
   /** Shown once the app state is known and the Companion is enabled. */
-  companion: { info: CompanionInfo; settings: CompanionSettings } | null
+  companion: { info: CompanionInfo; settings: CompanionSettings; reviewOpen: boolean } | null
 }
 
 function Segmented<T extends string>({
@@ -86,7 +86,15 @@ function Segmented<T extends string>({
 }
 
 /** The pairing QR code, one click away from any page. */
-function CompanionButton({ info, settings }: { info: CompanionInfo; settings: CompanionSettings }): React.JSX.Element {
+function CompanionButton({
+  info,
+  settings,
+  reviewOpen
+}: {
+  info: CompanionInfo
+  settings: CompanionSettings
+  reviewOpen: boolean
+}): React.JSX.Element {
   const [open, setOpen] = useState(false)
   return (
     <Dialog
@@ -112,7 +120,14 @@ function CompanionButton({ info, settings }: { info: CompanionInfo; settings: Co
           />
           Allow a tablet or phone on the same network
         </label>
-        {settings.lan && <CompanionPairing info={info} />}
+        {settings.lan && <CompanionPairing info={info} concealed={reviewOpen} />}
+        {settings.lan && (
+          <Alert
+            Icon={ShieldAlert}
+            title="Local network only"
+            description="Use it on your home network. On shared or public Wi-Fi, turn network access off."
+          />
+        )}
         {settings.lan && info.publicNetwork && (
           <Alert
             variant="destructive"

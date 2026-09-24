@@ -19,17 +19,27 @@ export interface Recorder {
   preview(width: number): Promise<string | null>
 
   start(outputDir: string): Promise<void>
-  /** Stops recording and returns the path of the recorded file. */
+  /** Stops recording once the file is complete, and returns its path. */
   stop(): Promise<string | null>
   isRecording(): boolean
   /** Current position in the recording, in milliseconds. */
   currentTimeMs(): number
   /** Saves a full-resolution screenshot of the captured display. */
   screenshot(filePath: string): Promise<void>
+
+  /**
+   * A recording this app started that is still running after the connection
+   * was lost (e.g. a network hiccup, or the app restarted): where it is being
+   * written and how long it is. Null if none.
+   */
+  recordingInProgress(): Promise<{ outputDir: string; durationMs: number } | null>
+  /** Picks up that recording again, so markers can continue. */
+  continueRecording(durationMs: number): void
 }
 
 export interface RecorderEvents {
-  onDisconnected(reason: string): void
+  /** `durationMs` is the recording length when the connection was lost during a recording. */
+  onDisconnected(reason: string, durationMs?: number): void
   onLevels(levels: AudioLevels): void
-  onRecordingStopped(filePath: string | null): void
+  onRecordingStopped(filePath: string | null, durationMs: number): void
 }

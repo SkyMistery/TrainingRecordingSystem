@@ -90,6 +90,7 @@ const api = {
 
   saveCompanionSettings: (settings: CompanionSettings) => invoke<void>('companion:save', settings),
   newCompanionToken: () => invoke<void>('companion:newToken'),
+  refreshCompanion: () => invoke<void>('companion:refresh'),
   openNotesWindow: () => invoke<void>('companion:openWindow'),
   openCompanionInBrowser: () => invoke<void>('companion:openBrowser'),
 
