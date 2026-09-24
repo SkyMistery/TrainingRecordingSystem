@@ -1,7 +1,7 @@
 {
   "name": "training-recording-system",
   "productName": "Training Recording System",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Record IVAO training sessions, mark significant moments, take voice notes and review them during the debriefing.",
   "main": "./out/main/index.js",
   "author": "SkyMistery",
