@@ -113,7 +113,7 @@ async function main() {
     await obs.call('SetCurrentProfile', { profileName: own.profile })
     await sleep(1500)
     await page.evaluate(
-      `window.api.startSession({traineeVid:'000000',traineeName:'E2E test',position:'TEST_APP',trainingType:'Recovery',trainerVid:'',date:'2026-09-23'})`
+      `window.api.startSession({traineeVid:'000000',traineeName:'E2E test',position:'TEST_APP',trainingType:'Recovery',trainerVid:'',date:'2026-09-23'}, true)`
     )
     let s = await waitFor(page, (st) => st.recording !== null)
     folderName = s.recording?.folderName

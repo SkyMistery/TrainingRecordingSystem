@@ -171,6 +171,8 @@ export interface SessionFile {
   metadata: SessionMetadata
   recording: RecordingInfo | null
   markers: Marker[]
+  /** The trainer's confirmation that everyone in the voice call agreed to be recorded (v1.3+). */
+  consent?: { statement: string; confirmedAt: string }
 }
 
 /** Session details the trainer can correct after recording (typos); they also name the folder. */
@@ -225,6 +227,8 @@ export interface AppState {
   /** Why voice notes can't be recorded right now (microphone problem), if anything. */
   microphoneError: string | null
   update: UpdateState | null
+  /** Version of the terms of use the user accepted (see shared/terms.ts), if any. */
+  termsAcceptedVersion: number | null
   busy: boolean
 }
 

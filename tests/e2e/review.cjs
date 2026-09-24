@@ -62,6 +62,8 @@ async function main() {
   writeFileSync(
     join(USERDATA, 'settings.json'),
     JSON.stringify({
+      // Isolated test profile: the terms dialog would cover the page.
+      termsAccepted: { version: 1, acceptedAt: new Date().toISOString() },
       companion: { enabled: true, lan: false, port: 17646 },
       obs: { host: '127.0.0.1', port: 1, passwordEncrypted: null }
     })

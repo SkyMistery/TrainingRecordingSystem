@@ -42,6 +42,8 @@ function setup() {
     JSON.stringify({
       sessionsDir: SESSIONS,
       notes: { model: 'base', language: 'en', transcribe: true },
+      // Isolated test profile: the terms dialog would cover the page.
+      termsAccepted: { version: 1, acceptedAt: new Date().toISOString() },
       companion: { enabled: false, lan: false, port: 17648 },
       obs: { host: '127.0.0.1', port: 1, passwordEncrypted: null }
     })

@@ -7,6 +7,7 @@ import {
   CardHeader,
   CardRoot,
   CardTitle,
+  Checkbox,
   Dialog,
   DropdownMenu,
   Input,
@@ -20,6 +21,7 @@ import {
   TableRow
 } from '@ivao/atmosphere-react'
 import { Circle, CircleAlert, Ellipsis, FolderOpen, Pencil, Play, RefreshCw, Settings2, Trash2 } from 'lucide-react'
+import { RECORDING_CONSENT } from '@shared/terms'
 import type { AppState, SessionDetails, SessionMetadata, SessionSummary } from '@shared/types'
 import { FirstRunChecklist, useChecklist } from '../components/FirstRunChecklist'
 import { formatDuration, todayIso } from '../format'
@@ -49,6 +51,7 @@ function NewSessionForm({
   })
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
+  const [consent, setConsent] = useState(false)
 
   useEffect(() => {
     window.api
@@ -64,21 +67,25 @@ function NewSessionForm({
     /^\d+$/.test(form.traineeVid.trim()) &&
     form.position.trim() !== '' &&
     /^\d*$/.test(form.trainerVid.trim()) &&
-    /^\d{4}-\d{2}-\d{2}$/.test(form.date)
+    /^\d{4}-\d{2}-\d{2}$/.test(form.date) &&
+    consent
 
   const start = async (): Promise<void> => {
     setStarting(true)
     onBusyChange(true)
     setError(null)
     try {
-      await window.api.startSession({
-        ...form,
-        traineeVid: form.traineeVid.trim(),
-        traineeName: form.traineeName.trim(),
-        position: form.position.trim(),
-        trainingType: form.trainingType.trim(),
-        trainerVid: form.trainerVid.trim()
-      })
+      await window.api.startSession(
+        {
+          ...form,
+          traineeVid: form.traineeVid.trim(),
+          traineeName: form.traineeName.trim(),
+          position: form.position.trim(),
+          trainingType: form.trainingType.trim(),
+          trainerVid: form.trainerVid.trim()
+        },
+        consent
+      )
       onStarted()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -124,6 +131,18 @@ function NewSessionForm({
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="session-date">Date</Label>
           <Input id="session-date" type="date" value={form.date} onChange={set('date')} />
+        </div>
+      </div>
+      {/* IVAO Rule 2.1.12; the confirmation is stored in the session. */}
+      <div className="flex items-start gap-3 rounded-md border border-border p-3">
+        <Checkbox id="recording-consent" checked={consent} onCheckedChange={(value) => setConsent(value === true)} />
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="recording-consent" className="text-sm font-normal leading-snug">
+            {RECORDING_CONSENT}
+          </Label>
+          <span className="text-xs text-muted-foreground">
+            IVAO rules also ask you to note the recording in your flight plan or ATIS remarks.
+          </span>
         </div>
       </div>
       {error && (

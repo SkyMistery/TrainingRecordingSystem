@@ -107,7 +107,7 @@ async function main() {
   let folder
   try {
     await evaluate(
-      `window.api.startSession({traineeVid:'000000',traineeName:'E2E test',position:'TEST_APP',trainingType:'Automated test',trainerVid:'',date:'2026-09-23'})`
+      `window.api.startSession({traineeVid:'000000',traineeName:'E2E test',position:'TEST_APP',trainingType:'Automated test',trainerVid:'',date:'2026-09-23'}, true)`
     )
     log('recording started; mic sources muted before note:', await micMuted())
     uIOhook.start()

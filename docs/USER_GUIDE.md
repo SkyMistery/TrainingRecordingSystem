@@ -21,6 +21,16 @@ possible while recording), or simply close the app: the update installs when
 it closes. Versions before 1.2.1 showed nothing until the download finished,
 so leave them open a minute or two.
 
+### Terms of use
+
+On first start (and whenever they change) the app shows its
+[terms of use](TERMS.md) and asks you to accept them. In short: you are
+responsible for what you record; record only with the consent of the trainee
+and everyone else in the voice call; note the recording in your flight plan or
+ATIS remarks (IVAO Rule 2.1.12); never publish recordings, voice notes or
+transcriptions; share screenshots only with the trainee and the training staff
+involved. The terms are also linked at the bottom of every page.
+
 ## 1. First setup
 
 Until everything is set up, the Sessions page shows a **Before your first
@@ -111,7 +121,10 @@ Transcription runs on your PC: nothing is sent online.
 ## 2. Recording a session
 
 1. **Sessions → New session**: trainee VID (and name), position, session
-   type (**Training** or **Exam**), your VID, date.
+   type (**Training** or **Exam**), your VID, date. Tick **The trainee and the
+   other participants in the voice call have agreed to be recorded** — ask them
+   first: recording can't start without it, and the confirmation (with the
+   time) is kept in the session's `session.json`.
 2. During the session:
    - **Marker** hotkey: screenshot + marker at the current moment (minus the
      pre-roll).

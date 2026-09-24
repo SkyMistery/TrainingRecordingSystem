@@ -21,6 +21,14 @@ Guidance for working on this repository (Training Recording System, TRS).
   every page (app and Companion) ends with the credits footer "made by
   Carmine (704798) and the IVAO Italy Division" + "© 2026 Carmine (704798)" (AppFooter); the
   copyright holder (footer, LICENSE, exe) is Carmine alone.
+- Legal: docs/TERMS.md is written by Carmine in the first person (not IVAO);
+  users accept it on first start and after every TERMS_VERSION bump
+  (src/shared/terms.ts). Every session needs the consent checkbox ("The trainee
+  and the other participants in the voice call have agreed to be recorded…",
+  IVAO Rule 2.1.12), stored in session.json. Recordings, voice notes and
+  transcriptions are never to be published; screenshots only to the trainee
+  and training staff. Retention is the trainer's decision. Not legal advice:
+  the trainer may still have the text reviewed.
 
 ## Commands
 

@@ -113,6 +113,8 @@ async function main() {
     join(USERDATA, 'settings.json'),
     JSON.stringify({
       sessionsDir: SESSIONS,
+      // Isolated test profile: the terms dialog would cover the page.
+      termsAccepted: { version: 1, acceptedAt: new Date().toISOString() },
       companion: { enabled: false, lan: false, port: 17647 },
       obs: { host: '127.0.0.1', port: 1, passwordEncrypted: null }
     })
@@ -181,6 +183,11 @@ async function main() {
     )
     const afterRemove = JSON.parse(readFileSync(join(keep, 'session.json'), 'utf8')).markers[0].categoryIds
     check('toggling again removes it', JSON.stringify(afterRemove) === '["separation"]', JSON.stringify(afterRemove))
+
+    const noConsent = await page.evaluate(
+      `window.api.startSession({traineeVid:'000000',traineeName:'E2E test',position:'TEST_APP',trainingType:'Training',trainerVid:'',date:'2026-09-24'}, false).then(() => 'started', (e) => e.message)`
+    )
+    check('recording refused without the consent confirmation', /agreed to be recorded/.test(noConsent), noConsent)
 
     const escape = await page.evaluate(`window.api.deleteSession('..').then(() => 'deleted', (e) => e.message)`)
     check('deleting outside the sessions folder is refused', escape !== 'deleted', escape)

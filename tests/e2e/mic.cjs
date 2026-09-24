@@ -24,6 +24,8 @@ async function runCase(name, notes) {
     join(USERDATA, 'settings.json'),
     JSON.stringify({
       capture: real.capture,
+      // Isolated test profile: the terms dialog would cover the page.
+      termsAccepted: { version: 1, acceptedAt: new Date().toISOString() },
       companion: { enabled: false, lan: false, port: 17647 },
       markers: {
         ...real.markers,
@@ -83,7 +85,7 @@ async function runCase(name, notes) {
   let folder
   try {
     await evaluate(
-      `window.api.startSession({traineeVid:'000000',traineeName:'E2E test',position:'TEST_APP',trainingType:'Microphone test',trainerVid:'',date:'2026-09-24'})`
+      `window.api.startSession({traineeVid:'000000',traineeName:'E2E test',position:'TEST_APP',trainingType:'Microphone test',trainerVid:'',date:'2026-09-24'}, true)`
     )
     await sleep(2500)
     uIOhook.start()

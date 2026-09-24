@@ -40,7 +40,9 @@ Download the latest `TrainingRecordingSystem-Setup-x.y.z.exe` from
 The installer is not code-signed, so Windows SmartScreen may warn: choose
 **More info → Run anyway**. The app updates itself from GitHub Releases.
 
-Then follow the [user guide](docs/USER_GUIDE.md).
+Then follow the [user guide](docs/USER_GUIDE.md). On first start the app asks
+you to accept the [terms of use](docs/TERMS.md): record only with the consent
+of everyone in the voice call, and never publish the recordings.
 
 ## Development
 
@@ -63,6 +65,7 @@ the installer and publishes one release with the auto-update files.
 ## Documentation
 
 - [User guide](docs/USER_GUIDE.md)
+- [Terms of use](docs/TERMS.md)
 - [Roadmap and status](docs/ROADMAP.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Future proposals](docs/FUTURE.md)
@@ -83,4 +86,5 @@ are the IVAO Italy division symbol.
 
 ## Licence
 
-[MIT](LICENSE). Third-party components keep their own licences.
+[MIT](LICENSE). Third-party components keep their own licences. Using the
+app also means accepting its [terms of use](docs/TERMS.md).

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AppFooter } from './components/AppFooter'
 import { Header, type Page } from './components/Header'
+import { TermsDialog } from './components/TermsDialog'
 import { useMarkerFeedbackSound } from './feedback'
 import { useAppState } from './hooks'
 import { RecordingPage } from './pages/RecordingPage'
@@ -8,6 +9,7 @@ import { ReviewPage } from './pages/ReviewPage'
 import { SessionsPage } from './pages/SessionsPage'
 import { SetupPage } from './pages/SetupPage'
 import { useTheme } from './useTheme'
+import { TERMS_VERSION } from '@shared/terms'
 
 export function App(): React.JSX.Element {
   const [version, setVersion] = useState('')
@@ -54,6 +56,7 @@ export function App(): React.JSX.Element {
         </div>
         <AppFooter version={version} />
       </main>
+      <TermsDialog open={state !== null && state.termsAcceptedVersion !== TERMS_VERSION} />
     </div>
   )
 }

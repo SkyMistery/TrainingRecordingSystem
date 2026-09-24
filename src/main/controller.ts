@@ -29,6 +29,7 @@ import type {
   WhisperModelId
 } from '../shared/types'
 import { sameHotkey } from '../shared/hotkey'
+import { RECORDING_CONSENT } from '../shared/terms'
 import { isAppPage } from './appPages'
 import { AudioCapture } from './audioWindow'
 import { CompanionServer, newCompanionToken } from './companion'
@@ -192,6 +193,7 @@ export class Controller {
       review: null,
       companion: { running: false, error: null, urls: [], qr: null, clients: 0, publicNetwork: false },
       update: null,
+      termsAcceptedVersion: settings.termsAccepted?.version ?? null,
       busy: false
     }
     this.recorder = new ObsRecorder(
@@ -332,7 +334,12 @@ export class Controller {
     handle('session:updateDetails', (folderName: string, details: SessionDetails) =>
       this.updateSessionDetails(folderName, details)
     )
-    handle('session:start', (metadata: SessionMetadata) => this.startSession(metadata))
+    handle('session:start', (metadata: SessionMetadata, consent: boolean) => this.startSession(metadata, consent))
+    handle('terms:accept', async (version: number) => {
+      if (!Number.isInteger(version)) throw new Error('Invalid terms version')
+      await updateSettings({ termsAccepted: { version, acceptedAt: new Date().toISOString() } })
+      this.patch({ termsAcceptedVersion: version })
+    })
     handle('session:stop', () => this.stopSession())
 
     handle('command', (name: SessionCommandName, args: unknown[]) => this.execute(name, args))
@@ -428,8 +435,10 @@ export class Controller {
 
   // --- Sessions ------------------------------------------------------------------
 
-  private async startSession(metadata: SessionMetadata): Promise<void> {
+  private async startSession(metadata: SessionMetadata, consent: boolean): Promise<void> {
     if (this.active || this.ending) throw new Error('A session is already being recorded')
+    // IVAO Rule 2.1.12: no recording of a voice conversation without its participants' consent.
+    if (consent !== true) throw new Error('Confirm that everyone in the voice call agreed to be recorded')
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(metadata?.date ?? ''))) throw new Error('Enter the date of the session')
     const recorder = this.requireObs()
     let capture = this.state.capture
@@ -446,6 +455,7 @@ export class Controller {
       }
       await recorder.configure(capture)
       const { folder, session } = await createSession(getSettings().sessionsDir, metadata)
+      session.consent = { statement: RECORDING_CONSENT, confirmedAt: new Date().toISOString() }
       try {
         await recorder.start(folder)
       } catch (error) {

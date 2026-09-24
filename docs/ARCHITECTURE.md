@@ -215,6 +215,13 @@ shared. The notes window avoids the recorded monitor.
   capitals only renames in place. Names are capped at 80 characters.
 - The list is sorted by date, then `createdAt` (names carry no time of day).
 
+Since v1.3 `session.json` also holds `consent`: the statement the trainer
+confirmed in the New session dialog and when (`startSession` refuses to
+record without it). The terms of use (docs/TERMS.md) are bundled into the
+renderer and shown by `TermsDialog` until the accepted version in settings
+(`termsAccepted`) equals `TERMS_VERSION` (src/shared/terms.ts): bump it when
+the terms change in substance.
+
 `session.json` is `SessionFile` in src/shared/types.ts (`schemaVersion: 1`);
 `loadSession` fills fields added by later versions and migrates old ones
 (v1.0 `categoryId` → `categoryIds`).

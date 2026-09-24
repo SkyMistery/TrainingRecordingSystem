@@ -299,6 +299,9 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
                 {metadata.date} · trainee {metadata.traineeVid}
                 {metadata.traineeName && ` (${metadata.traineeName})`}
               </div>
+              <div className="text-xs text-muted-foreground">
+                Share this window only with the trainee. Don’t publish the recording.
+              </div>
             </div>
           </div>
           <div className="flex gap-2">

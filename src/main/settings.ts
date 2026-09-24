@@ -26,6 +26,8 @@ export interface Settings {
   obsPreviousWorkspace: { profile: string | null; collection: string | null } | null
   /** Last position of the status window, in screen coordinates. */
   statusWindowPosition: { x: number; y: number } | null
+  /** Terms of use accepted by the user: which version, and when. */
+  termsAccepted: { version: number; acceptedAt: string } | null
 }
 
 const key = (code: number, label: string): Hotkey => ({
@@ -77,7 +79,8 @@ const defaults = (): Settings => ({
   companion: { enabled: true, lan: false, port: 17645 },
   companionToken: randomBytes(24).toString('hex'),
   obsPreviousWorkspace: null,
-  statusWindowPosition: null
+  statusWindowPosition: null,
+  termsAccepted: null
 })
 
 const filePath = (): string => join(app.getPath('userData'), 'settings.json')

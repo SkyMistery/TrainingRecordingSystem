@@ -72,7 +72,9 @@ const api = {
   updateSessionDetails: (folderName: string, details: SessionDetails) =>
     invoke<string>('session:updateDetails', folderName, details),
   onSessionsChanged: (listener: () => void) => subscribe('sessions:changed', listener),
-  startSession: (metadata: SessionMetadata) => invoke<void>('session:start', metadata),
+  /** `consent`: the trainer confirmed that everyone in the voice call agreed to be recorded. */
+  startSession: (metadata: SessionMetadata, consent: boolean) => invoke<void>('session:start', metadata, consent),
+  acceptTerms: (version: number) => invoke<void>('terms:accept', version),
   stopSession: () => invoke<void>('session:stop'),
 
   /** Session edits and live actions (markers, notes, player), shared with the Companion page. */

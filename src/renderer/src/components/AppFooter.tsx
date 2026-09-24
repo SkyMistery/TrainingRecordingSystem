@@ -1,3 +1,4 @@
+import { TERMS_URL } from '@shared/terms'
 import symbol from '../assets/it-symbol.svg'
 import symbolWhite from '../assets/it-symbol-white.svg'
 
@@ -19,6 +20,12 @@ export function AppFooter({ version }: { version?: string }): React.JSX.Element 
           ·
         </span>
         <span className="whitespace-nowrap">{COPYRIGHT}</span>
+        <span className="mx-2" aria-hidden>
+          ·
+        </span>
+        <a href={TERMS_URL} target="_blank" rel="noreferrer" className="whitespace-nowrap underline">
+          Terms of use
+        </a>
       </p>
     </footer>
   )
