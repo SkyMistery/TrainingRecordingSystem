@@ -63,7 +63,7 @@ const api = {
   setSourceVolume: (sourceId: string, volumeDb: number) => invoke<void>('capture:setVolume', sourceId, volumeDb),
 
   listSessions: () => invoke<SessionSummary[]>('sessions:list'),
-  openSessionsFolder: (folder?: string) => invoke<void>('sessions:openFolder', folder),
+  openSessionsFolder: (folderName?: string) => invoke<void>('sessions:openFolder', folderName),
   getSessionDefaults: () => invoke<{ trainerVid: string }>('sessions:defaults'),
   chooseSessionsFolder: () => invoke<void>('sessions:chooseFolder'),
   deleteSession: (folderName: string) => invoke<void>('session:delete', folderName),

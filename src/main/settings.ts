@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { rename, writeFile } from 'node:fs/promises'
+import { copyFileSync, existsSync, readFileSync } from 'node:fs'
+import { copyFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
+import { writeJsonAtomic } from './files'
 import type { ThemePreference } from '../shared/theme'
 import type { CaptureConfig, CompanionSettings, Hotkey, MarkerSettings, NoteSettings } from '../shared/types'
 
@@ -81,41 +82,67 @@ const defaults = (): Settings => ({
 })
 
 const filePath = (): string => join(app.getPath('userData'), 'settings.json')
+/** Copy of the last settings written successfully, used if settings.json is damaged. */
+const backupPath = (): string => `${filePath()}.bak`
 
 let current: Settings | null = null
+
+function readStored(path: string): Partial<Settings> | null {
+  try {
+    const stored = JSON.parse(readFileSync(path, 'utf8')) as unknown
+    return stored && typeof stored === 'object' ? (stored as Partial<Settings>) : null
+  } catch {
+    return null
+  }
+}
 
 export function getSettings(): Settings {
   if (!current) {
     const base = defaults()
-    try {
-      const stored = JSON.parse(readFileSync(filePath(), 'utf8')) as Partial<Settings>
-      current = {
-        ...base,
-        ...stored,
-        obs: { ...base.obs, ...stored.obs },
-        capture: { ...base.capture, ...stored.capture },
-        notes: { ...base.notes, ...stored.notes },
-        companion: { ...base.companion, ...stored.companion },
-        markers: {
-          ...base.markers,
-          ...stored.markers,
-          hotkeys: { ...base.markers.hotkeys, ...stored.markers?.hotkeys }
-        }
+    let stored = readStored(filePath())
+    if (!stored && existsSync(filePath())) {
+      // Damaged (not merely missing): keep it for diagnosis and fall back to the backup.
+      console.error('settings.json is damaged; using the backup copy')
+      try {
+        copyFileSync(filePath(), join(app.getPath('userData'), 'settings.damaged.json'))
+      } catch {
+        // Diagnosis only.
       }
-    } catch {
-      current = base
+      stored = readStored(backupPath())
     }
+    current = stored
+      ? {
+          ...base,
+          ...stored,
+          obs: { ...base.obs, ...stored.obs },
+          capture: { ...base.capture, ...stored.capture },
+          notes: { ...base.notes, ...stored.notes },
+          companion: { ...base.companion, ...stored.companion },
+          markers: {
+            ...base.markers,
+            ...stored.markers,
+            hotkeys: { ...base.markers.hotkeys, ...stored.markers?.hotkeys }
+          }
+        }
+      : base
   }
   return current
 }
 
+/** Writes run one at a time: overlapping writes to the same temporary file could corrupt it. */
+let writes: Promise<void> = Promise.resolve()
+
 /** Merges and persists settings; the file is replaced atomically. */
-export async function updateSettings(patch: Partial<Settings>): Promise<Settings> {
+export function updateSettings(patch: Partial<Settings>): Promise<Settings> {
   current = { ...getSettings(), ...patch }
-  const tmp = `${filePath()}.tmp`
-  await writeFile(tmp, JSON.stringify(current, null, 2), 'utf8')
-  await rename(tmp, filePath())
-  return current
+  const write = async (): Promise<void> => {
+    // The latest settings, so a queued write never puts back older values.
+    await writeJsonAtomic(filePath(), getSettings())
+    await copyFile(filePath(), backupPath()).catch(() => undefined)
+  }
+  const next = writes.then(write, write)
+  writes = next.catch(() => undefined)
+  return next.then(() => getSettings())
 }
 
 export function encryptSecret(secret: string): string | null {

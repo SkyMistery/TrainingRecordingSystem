@@ -1,5 +1,7 @@
 import { join } from 'node:path'
-import { BrowserWindow, screen, type Display } from 'electron'
+import { BrowserWindow, screen } from 'electron'
+import { loadAppPage } from './appPages'
+import { recordedDisplay } from './displays'
 import { getSettings, updateSettings } from './settings'
 
 const WIDTH = 360
@@ -7,17 +9,6 @@ const HEIGHT = 112
 const MARGIN = 24
 
 let window: BrowserWindow | null = null
-
-/**
- * The Electron display that OBS is recording, matched on the "@ x,y" position
- * in the OBS monitor name (physical pixels).
- */
-function recordedDisplay(obsDisplayName: string | undefined): Display | undefined {
-  const match = obsDisplayName && /@\s*(-?\d+)\s*,\s*(-?\d+)/.exec(obsDisplayName)
-  if (!match) return undefined
-  const [x, y] = [Number(match[1]), Number(match[2])]
-  return screen.getAllDisplays().find((d) => Math.abs(d.nativeOrigin.x - x) < 2 && Math.abs(d.nativeOrigin.y - y) < 2)
-}
 
 /** Top-right corner of a monitor other than the recorded one, so the window isn't recorded. */
 function defaultPosition(obsDisplayName: string | undefined): { x: number; y: number } {
@@ -72,21 +63,19 @@ export function showStatusWindow(obsDisplayName: string | undefined): void {
     }
   })
   window.setAlwaysOnTop(true, 'screen-saver')
+  // Kept out of the recording even if it is dragged onto the recorded monitor.
+  window.setContentProtection(true)
   window.once('ready-to-show', () => window?.showInactive())
   window.on('moved', () => {
     if (!window) return
     const [x, y] = window.getPosition()
-    void updateSettings({ statusWindowPosition: { x, y } })
+    updateSettings({ statusWindowPosition: { x, y } }).catch((error: unknown) => console.error(error))
   })
   window.on('closed', () => {
     window = null
   })
 
-  if (process.env['ELECTRON_RENDERER_URL']) {
-    void window.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#status`)
-  } else {
-    void window.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'status' })
-  }
+  void loadAppPage(window, 'status')
 }
 
 export function hideStatusWindow(): void {

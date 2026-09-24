@@ -90,7 +90,9 @@ async function connect(target) {
         if (data.id !== n) return
         ws.removeEventListener('message', handler)
         const result = data.result
-        resolve(result.exceptionDetails ? { error: result.exceptionDetails.exception?.description } : result.result.value)
+        resolve(
+          result.exceptionDetails ? { error: result.exceptionDetails.exception?.description } : result.result.value
+        )
       }
       ws.addEventListener('message', handler)
       ws.send(
@@ -174,7 +176,9 @@ async function main() {
       toggled === 'ok' && JSON.stringify(afterToggle) === '["positive","separation"]',
       JSON.stringify(afterToggle)
     )
-    await page.evaluate(`window.api.command('toggleMarkerCategory', '2026-09-24_1000_000000_E2E_KEEP', 'm1', 'positive')`)
+    await page.evaluate(
+      `window.api.command('toggleMarkerCategory', '2026-09-24_1000_000000_E2E_KEEP', 'm1', 'positive')`
+    )
     const afterRemove = JSON.parse(readFileSync(join(keep, 'session.json'), 'utf8')).markers[0].categoryIds
     check('toggling again removes it', JSON.stringify(afterRemove) === '["separation"]', JSON.stringify(afterRemove))
 
@@ -244,6 +248,35 @@ async function main() {
     check('saving the same details keeps the folder', again.name === NEW, JSON.stringify(again))
     const listed = await page.evaluate('window.api.listSessions()')
     check('the list shows the new name', listed.length === 1 && listed[0].folderName === NEW)
+
+    // Windows names ignore case: a change of capitals is a rename in place, never "-2".
+    const cased = await update(NEW, {
+      traineeVid: '123456',
+      traineeName: 'mario rossi',
+      position: 'LIRF_TWR',
+      trainingType: 'Exam'
+    })
+    const LOWER = '2026-09-24_123456_mario-rossi_LIRF_TWR_Exam'
+    const names = require('node:fs').readdirSync(SESSIONS)
+    check('a change of capitals renames in place', cased.name === LOWER && names.includes(LOWER), JSON.stringify(cased))
+    const casedFile = JSON.parse(readFileSync(join(SESSIONS, LOWER, 'session.json'), 'utf8'))
+    check(
+      'screenshots follow the change of capitals',
+      casedFile.markers[0].screenshot === `${LOWER}_screen/m-0001.png` &&
+        require('node:fs').readdirSync(join(SESSIONS, LOWER)).includes(`${LOWER}_screen`),
+      casedFile.markers[0].screenshot
+    )
+
+    // A damaged session.json (e.g. a power cut) falls back to the backup copy.
+    check('a backup copy is kept', existsSync(join(SESSIONS, LOWER, 'session.json.bak')))
+    writeFileSync(join(SESSIONS, LOWER, 'session.json'), '{"schemaVersion":1,"id":')
+    const afterDamage = await page.evaluate('window.api.listSessions()')
+    check('a damaged session.json is read from the backup', afterDamage.length === 1 && afterDamage[0].noteCount === 2)
+    // Anything else in the sessions folder never breaks the list.
+    mkdirSync(join(SESSIONS, 'not-a-session'), { recursive: true })
+    writeFileSync(join(SESSIONS, 'not-a-session', 'session.json'), '{"hello":"world"}')
+    const withJunk = await page.evaluate('window.api.listSessions()')
+    check('an unrelated session.json is ignored', withJunk.length === 1, String(withJunk.length))
   } finally {
     page?.close()
     app.kill()

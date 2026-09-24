@@ -20,38 +20,92 @@ jobs:
   release:
     runs-on: windows-latest
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ github.ref_name }}
     steps:
       # A queued duplicate run stops here once the first one has published.
       - name: Check for a published release
         id: existing
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
             echo "Release $TAG is already published: nothing to do."
             echo "published=true" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.existing.outputs.published != 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - if: steps.existing.outputs.published != 'true'
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           cache: npm
+      # electron-builder publishes under package.json's version: a tag without
+      # the version bump would publish an empty release and break auto-update.
+      - name: Check the tag matches the version
+        if: steps.existing.outputs.published != 'true'
+        shell: bash
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Tag $TAG does not match package.json version $VERSION"
+            exit 1
+          fi
+      # No token here: install scripts of dependencies never see it.
       - if: steps.existing.outputs.published != 'true'
         run: npm ci
       - if: steps.existing.outputs.published != 'true'
         run: npm run typecheck
       # Create the release up front as a draft: when electron-builder creates it
       # itself, its parallel uploads can race and produce duplicate releases.
-      - name: Create draft release
+      # A draft left by a failed run is reused (drafts are invisible to the
+      # check above), and more than one stops the run.
+      - name: Create or reuse the draft release
         if: steps.existing.outputs.published != 'true'
         shell: bash
-        run: gh release create "$TAG" --draft --title "${TAG#v}" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DRAFTS=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id")
+          COUNT=$(echo "$DRAFTS" | grep -c . || true)
+          if [ "$COUNT" -gt 1 ]; then
+            echo "::error::$COUNT draft releases exist for $TAG: delete the extra ones and run again"
+            exit 1
+          fi
+          if [ "$COUNT" -eq 0 ]; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --title "${TAG#v}" --generate-notes
+            DRAFTS=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id")
+          fi
+          echo "RELEASE_ID=$DRAFTS" >> "$GITHUB_ENV"
       - if: steps.existing.outputs.published != 'true'
         run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Publish only a complete release whose update metadata matches the installer.
+      - name: Check the uploaded files
+        if: steps.existing.outputs.published != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${TAG#v}"
+          EXE="TrainingRecordingSystem-Setup-$VERSION.exe"
+          ASSETS=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '.assets[] | "\(.name) \(.size)"')
+          echo "$ASSETS"
+          for NAME in latest.yml "$EXE" "$EXE.blockmap"; do
+            echo "$ASSETS" | grep -q "^$NAME " || { echo "::error::$NAME is missing from the release"; exit 1; }
+          done
+          LOCAL_SIZE=$(stat -c %s "dist/$EXE")
+          echo "$ASSETS" | grep -q "^$EXE $LOCAL_SIZE$" || { echo "::error::$EXE on the release differs from the build"; exit 1; }
+          LOCAL_SHA=$(node -e "const c=require('crypto'),f=require('fs');console.log(c.createHash('sha512').update(f.readFileSync('dist/$EXE')).digest('base64'))")
+          grep -q "sha512: $LOCAL_SHA" dist/latest.yml || { echo "::error::latest.yml does not match $EXE"; exit 1; }
+          # By asset id: tag-based downloads don't see drafts.
+          YML_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '.assets[] | select(.name == "latest.yml") | .id')
+          gh api "repos/$GITHUB_REPOSITORY/releases/assets/$YML_ID" -H "Accept: application/octet-stream" > uploaded-latest.yml
+          cmp uploaded-latest.yml dist/latest.yml || { echo "::error::The uploaded latest.yml differs from the build"; exit 1; }
       - name: Publish release
         if: steps.existing.outputs.published != 'true'
         shell: bash
-        run: gh release edit "$TAG" --draft=false --latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false -f make_latest=true

@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { BrowserWindow, ipcMain } from 'electron'
+import { loadAppPage } from './appPages'
 import type { AudioCommand, NoteAudio } from '../shared/types'
 
 /**
@@ -42,11 +43,7 @@ export class AudioCapture {
     this.ready = new Promise((resolve) => {
       this.markReady = resolve
     })
-    if (process.env['ELECTRON_RENDERER_URL']) {
-      void this.window.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#audio`)
-    } else {
-      void this.window.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'audio' })
-    }
+    void loadAppPage(this.window, 'audio')
     return this.ready
   }
 

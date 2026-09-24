@@ -1,19 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rename } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import type { SessionFile, SessionMetadata, SessionSummary } from '../shared/types'
+import { exists, renameWithRetry, writeJsonAtomic } from './files'
 
 const SESSION_FILE = 'session.json'
+/** Copy of the last good session.json, read if the file itself is damaged. */
+const BACKUP_FILE = 'session.json.bak'
 export const RECORDING_FILE = 'recording.mp4'
-
-export async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
-  const tmp = `${filePath}.tmp`
-  await writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
-  await rename(tmp, filePath)
-}
+/** Keeps paths short: the screenshots folder repeats the name inside the session folder. */
+const MAX_FOLDER_NAME = 80
 
 function safeSegment(value: string): string {
-  return value
+  return String(value ?? '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '') // "Nicolò" → "Nicolo"
     .trim()
@@ -28,6 +27,8 @@ function sessionFolderName(metadata: SessionMetadata): string {
     .map(safeSegment)
     .filter(Boolean)
     .join('_')
+    .slice(0, MAX_FOLDER_NAME)
+    .replace(/[-_]+$/, '')
 }
 
 /** A folder path for the session that doesn't exist yet; a second session the same day gets "-2". */
@@ -59,12 +60,37 @@ export async function createSession(
 }
 
 export async function saveSession(folder: string, session: SessionFile): Promise<void> {
-  await writeJsonAtomic(join(folder, SESSION_FILE), session)
+  const file = join(folder, SESSION_FILE)
+  await writeJsonAtomic(file, session)
+  await copyFile(file, join(folder, BACKUP_FILE)).catch(() => undefined)
+}
+
+async function readSessionFile(file: string): Promise<SessionFile> {
+  const session = JSON.parse(await readFile(file, 'utf8')) as SessionFile
+  // Anything else in the sessions folder (or a hand-edited file) is not a session.
+  const valid =
+    session &&
+    typeof session === 'object' &&
+    typeof session.createdAt === 'string' &&
+    session.metadata &&
+    typeof session.metadata === 'object' &&
+    typeof session.metadata.date === 'string' &&
+    (session.markers === undefined || Array.isArray(session.markers))
+  if (!valid) throw new Error('Not a session file')
+  return session
 }
 
 /** Reads a session, filling in fields added by later versions of the app. */
 export async function loadSession(folder: string): Promise<SessionFile> {
-  const session = JSON.parse(await readFile(join(folder, SESSION_FILE), 'utf8')) as SessionFile
+  let session: SessionFile
+  try {
+    session = await readSessionFile(join(folder, SESSION_FILE))
+  } catch (error) {
+    // A power cut can leave session.json damaged: the backup is at most one change older.
+    if (!(await exists(join(folder, BACKUP_FILE)))) throw error
+    session = await readSessionFile(join(folder, BACKUP_FILE))
+    console.warn(`Session ${basename(folder)}: session.json unreadable, using the backup`)
+  }
   session.markers = (session.markers ?? []).map((stored) => {
     // Before v1.1 a marker had a single category.
     const { categoryId, ...marker } = stored as typeof stored & { categoryId?: string | null }
@@ -103,47 +129,62 @@ export class SessionStore {
   }
 }
 
+/** A rename that stopped part-way; `folder` is where the session is now. */
+export class SessionRenameError extends Error {
+  constructor(
+    readonly folder: string,
+    readonly cause: unknown
+  ) {
+    super('Could not rename the session folder')
+  }
+}
+
 /**
  * Gives a session folder (and its screenshots folder) the name its details
  * call for, after they were corrected. Returns the new folder, or the same one
- * when the name doesn't change. Screenshot paths in `session` are updated;
- * the caller saves it.
+ * when the name doesn't change. The session is saved after each step, so
+ * session.json always matches the folders on disk even if a later step fails.
  */
 export async function renameSessionFolder(root: string, folder: string, session: SessionFile): Promise<string> {
   const current = basename(folder)
-  // Keep "-2" style suffixes out of the comparison: the same details keep the same folder.
   const wanted = sessionFolderName(session.metadata)
+  // A "-2" style suffix is kept: the same details keep the same folder.
+  const tail = current.slice(wanted.length)
+  const suffix = /^-\d+$/.test(tail) ? tail : ''
+  const sameName = current.toLowerCase() === (wanted + suffix).toLowerCase()
+  // Windows names ignore case: a change of capitals only is a rename in place.
   const target =
-    current === wanted || current.startsWith(`${wanted}-`) ? folder : await freeFolder(root, session.metadata)
-  if (target !== folder) await renameWithRetry(folder, target)
-
-  // Screenshots: v1.0 used "screenshots/", later versions "<session>_screen/".
-  const shotsDir = screenshotsDir(target)
-  const oldDirs = new Set(
-    session.markers.map((marker) => marker.screenshot?.split('/')[0]).filter((dir): dir is string => !!dir)
-  )
-  for (const dir of oldDirs) {
-    if (dir === shotsDir || !(await exists(join(target, dir)))) continue
-    if (await exists(join(target, shotsDir))) continue // never merge into an existing folder
-    await renameWithRetry(join(target, dir), join(target, shotsDir))
-    for (const marker of session.markers) {
-      if (marker.screenshot?.startsWith(`${dir}/`))
-        marker.screenshot = `${shotsDir}/${marker.screenshot.slice(dir.length + 1)}`
+    current === wanted + suffix
+      ? folder
+      : sameName
+        ? join(root, wanted + suffix)
+        : await freeFolder(root, session.metadata)
+  let location = folder
+  try {
+    if (target !== folder) {
+      await renameWithRetry(folder, target)
+      location = target
     }
-  }
-  return target
-}
 
-/** Windows refuses to rename a folder for a moment while a file in it is being closed. */
-async function renameWithRetry(from: string, to: string): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await rename(from, to)
-      return
-    } catch (error) {
-      if (attempt >= 8) throw error
-      await new Promise((resolve) => setTimeout(resolve, 250))
+    // Screenshots: v1.0 used "screenshots/", later versions "<session>_screen/".
+    const shotsDir = screenshotsDir(target)
+    const oldDirs = new Set(
+      session.markers.map((marker) => marker.screenshot?.split('/')[0]).filter((dir): dir is string => !!dir)
+    )
+    for (const dir of oldDirs) {
+      if (dir === shotsDir || !(await exists(join(target, dir)))) continue
+      // Never merge into an existing folder (a case-only change is the same folder).
+      if (dir.toLowerCase() !== shotsDir.toLowerCase() && (await exists(join(target, shotsDir)))) continue
+      await renameWithRetry(join(target, dir), join(target, shotsDir))
+      for (const marker of session.markers) {
+        if (marker.screenshot?.startsWith(`${dir}/`))
+          marker.screenshot = `${shotsDir}/${marker.screenshot.slice(dir.length + 1)}`
+      }
+      await saveSession(target, session)
     }
+    return target
+  } catch (error) {
+    throw new SessionRenameError(location, error)
   }
 }
 
@@ -200,14 +241,5 @@ export async function adoptRecording(folder: string, outputPath: string): Promis
       if (attempt >= 20) throw error
       await new Promise((resolve) => setTimeout(resolve, 250))
     }
-  }
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path)
-    return true
-  } catch {
-    return false
   }
 }

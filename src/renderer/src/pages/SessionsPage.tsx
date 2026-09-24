@@ -227,7 +227,15 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
   }
 
   useEffect(() => {
-    const load = (): void => void window.api.listSessions().then(setSessions)
+    // Only the latest request counts: an earlier, slower answer would show stale folders.
+    let latest = 0
+    const load = (): void => {
+      const request = ++latest
+      window.api
+        .listSessions()
+        .then((list) => request === latest && setSessions(list))
+        .catch((error: unknown) => console.error('Could not list the sessions', error))
+    }
     load()
     return window.api.onSessionsChanged(load)
   }, [])
@@ -290,7 +298,10 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
             <CardTitle>Sessions</CardTitle>
             <CardDescription>Open a session to review it with the trainee during the debriefing.</CardDescription>
           </div>
-          <Button variant="secondary" onClick={() => void window.api.openSessionsFolder()}>
+          <Button
+            variant="secondary"
+            onClick={() => void act('Could not open the folder', () => window.api.openSessionsFolder())}
+          >
             <FolderOpen className="size-4" aria-hidden />
             Open sessions folder
           </Button>
@@ -343,7 +354,9 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
                         variant="ghost"
                         size="sm"
                         title="Open the session folder"
-                        onClick={() => void window.api.openSessionsFolder(session.folder)}
+                        onClick={() =>
+                          void act('Could not open the folder', () => window.api.openSessionsFolder(session.folderName))
+                        }
                       >
                         <FolderOpen className="size-4" aria-hidden />
                         Files

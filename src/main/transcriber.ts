@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { createWriteStream, existsSync } from 'node:fs'
 import { mkdir, rename, rm } from 'node:fs/promises'
 import { availableParallelism } from 'node:os'
@@ -11,8 +12,20 @@ import type { ModelDownload, Note, SessionFile, WhisperModelId } from '../shared
 import type { SessionStore } from './sessions'
 import { getSettings } from './settings'
 
+/** A fixed revision of the model repository, so the files match the digests below. */
+const MODEL_REVISION = '5359861c739e955e79d9a303bcbc70fb988958b1'
 const MODEL_URL = (model: WhisperModelId): string =>
-  `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${model}.bin`
+  `https://huggingface.co/ggerganov/whisper.cpp/resolve/${MODEL_REVISION}/ggml-${model}.bin`
+
+/** Size and sha256 of each model file: a damaged or altered download is refused. */
+const MODEL_FILES: Record<WhisperModelId, { bytes: number; sha256: string }> = {
+  base: { bytes: 147951465, sha256: '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe' },
+  small: { bytes: 487601967, sha256: '1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b' },
+  'large-v3-turbo-q5_0': {
+    bytes: 574041195,
+    sha256: '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2'
+  }
+}
 
 /** Vocabulary hint: keeps ATC terms spelled the usual way. */
 const PROMPT =
@@ -141,8 +154,10 @@ export class Transcriber {
       if (!response.ok || !response.body) throw new Error(`Download failed (HTTP ${response.status})`)
       this.download.totalBytes = Number(response.headers.get('content-length') ?? 0)
       let lastUpdate = 0
+      const hash = createHash('sha256')
       const body = Readable.fromWeb(response.body as import('node:stream/web').ReadableStream)
       body.on('data', (chunk: Buffer) => {
+        hash.update(chunk)
         if (!this.download) return
         this.download.receivedBytes += chunk.length
         if (Date.now() - lastUpdate > 250) {
@@ -151,6 +166,10 @@ export class Transcriber {
         }
       })
       await pipeline(body, createWriteStream(partial))
+      const expected = MODEL_FILES[model]
+      if (this.download.receivedBytes !== expected.bytes || hash.digest('hex') !== expected.sha256) {
+        throw new Error('The downloaded model is damaged: download it again')
+      }
       await rename(partial, target)
     } catch (error) {
       await rm(partial, { force: true }).catch(() => undefined)

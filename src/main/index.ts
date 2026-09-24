@@ -1,15 +1,49 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import type { Theme, ThemePreference, ThemeState } from '../shared/theme'
+import { isAppPage, loadAppPage } from './appPages'
 import { Controller } from './controller'
 import { handleMediaScheme, registerMediaScheme } from './media'
 import { getSettings, updateSettings } from './settings'
 
 registerMediaScheme()
 
+// A second copy would fight over the keyboard hook, OBS, the Companion port and
+// the same files: bring the running one to the front instead.
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0)
+}
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.focus()
+})
+
+/**
+ * Every window stays on its own page: a link, a dropped file or a script must
+ * not replace it with another page (which would get the preload's API), and
+ * new windows are refused (web links go to the default browser).
+ */
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-navigate', (event, url) => {
+    const current = contents.getURL()
+    // The notes window moves within the Companion page (pairing → page).
+    const sameCompanion = url.startsWith('http://') && current && new URL(url).origin === new URL(current).origin
+    if (!isAppPage(url) && !sameCompanion) event.preventDefault()
+  })
+  contents.on('will-attach-webview', (event) => event.preventDefault())
+  contents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://')) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+})
+
 // Atmosphere page background (--body) for each theme, used before the UI paints.
 const BODY_COLOR: Record<Theme, string> = { day: '#ffffff', night: '#12131b' }
+
+/** Stopping the recording and restoring the OBS profile normally takes a few seconds. */
+const SHUTDOWN_TIMEOUT_MS = 20_000
 
 let mainWindow: BrowserWindow | null = null
 let controller: Controller | null = null
@@ -55,17 +89,7 @@ function createMainWindow(): void {
     app.quit()
   })
 
-  // Links open in the default browser, never inside the app.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) void shell.openExternal(url)
-    return { action: 'deny' }
-  })
-
-  if (process.env['ELECTRON_RENDERER_URL']) {
-    void mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
+  void loadAppPage(mainWindow)
 }
 
 function registerIpc(): void {
@@ -86,11 +110,36 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
+  // Only the app's own pages get permissions (the microphone); the Companion
+  // page in the notes window and anything else get none.
+  session.defaultSession.setPermissionRequestHandler((contents, _permission, callback) =>
+    callback(isAppPage(contents.getURL()))
+  )
+  session.defaultSession.setPermissionCheckHandler((contents, _permission, _origin, details) =>
+    isAppPage(details.requestingUrl ?? contents?.getURL() ?? '')
+  )
   applyThemePreference(getSettings().theme)
   handleMediaScheme()
   registerIpc()
-  controller = new Controller()
-  await controller.init()
+  // Transcripts shown while recording must not end up in the recording itself
+  // (single monitor, or the window left on the recorded one): hide the window
+  // from screen capture only then, since the review is meant to be shared.
+  controller = new Controller((recording) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setContentProtection(recording)
+  })
+  try {
+    await controller.init()
+  } catch (error) {
+    // Never keep running invisibly (with the keyboard hook active).
+    console.error('Startup failed', error)
+    dialog.showErrorBox(
+      'Training Recording System could not start',
+      error instanceof Error ? error.message : String(error)
+    )
+    quitState = 'done'
+    app.quit()
+    return
+  }
   createMainWindow()
 
   if (app.isPackaged) {
@@ -121,7 +170,17 @@ app.on('before-quit', (event) => {
       if (response !== 0) return
     }
     quitState = 'shuttingDown'
-    await controller?.shutdown().catch((error: unknown) => console.error('Shutdown failed', error))
+    // OBS may not answer (frozen, or closed mid-request): never hang on quit.
+    const timeout = new Promise<void>((resolve) =>
+      setTimeout(() => {
+        console.error('Shutdown took too long; quitting anyway')
+        resolve()
+      }, SHUTDOWN_TIMEOUT_MS)
+    )
+    await Promise.race([
+      controller?.shutdown().catch((error: unknown) => console.error('Shutdown failed', error)),
+      timeout
+    ])
     quitState = 'done'
     app.quit()
   })()

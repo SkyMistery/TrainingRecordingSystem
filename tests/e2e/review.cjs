@@ -132,6 +132,45 @@ async function main() {
   const noCookieMedia = await fetch(`${base}/media/${encodeURIComponent(COPY)}/recording.mp4`)
   check('Media refused without pairing', noCookieMedia.status === 401)
 
+  // Malformed requests from anyone on the network must not break the server.
+  const raw = (request) =>
+    new Promise((resolve) => {
+      const socket = require('node:net').connect(Number(pair.port), pair.hostname, () => socket.write(request))
+      let reply = ''
+      socket.on('data', (chunk) => (reply += chunk))
+      socket.on('close', () => resolve(reply.split('\r\n')[0]))
+      socket.on('error', () => resolve('error'))
+      setTimeout(() => socket.destroy(), 3000)
+    })
+  const multibyte = 'é' + 'a'.repeat(token.length - 1)
+  const badRequests = [
+    ['Request line "//" answered', 'GET // HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'],
+    [
+      'Multibyte pairing token answered',
+      `GET /pair?token=${encodeURIComponent(multibyte)} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`
+    ],
+    [
+      'Multibyte cookie answered',
+      `GET / HTTP/1.1\r\nHost: x\r\nCookie: trs_companion=${multibyte}\r\nConnection: close\r\n\r\n`
+    ],
+    [
+      'Malformed media path answered',
+      `GET /media/%E0%A4%A HTTP/1.1\r\nHost: x\r\n${'Cookie: ' + cookie}\r\nConnection: close\r\n\r\n`
+    ],
+    [
+      'Malformed static path answered',
+      `GET /%E0%A4%A HTTP/1.1\r\nHost: x\r\n${'Cookie: ' + cookie}\r\nConnection: close\r\n\r\n`
+    ]
+  ]
+  for (const [label, request] of badRequests) {
+    const status = await raw(request)
+    check(label, /^HTTP\/1\.1 4\d\d/.test(status), status)
+  }
+  check(
+    'Server still works after malformed requests',
+    (await fetch(base + '/', { headers: { cookie } })).status === 200
+  )
+
   // --- WebSocket security -------------------------------------------------------------
   const wsOpen = (headers) =>
     new Promise((resolve) => {
@@ -279,7 +318,10 @@ async function main() {
     'Bad marker id reports an error',
     (await send('toggleMarkerCategory', COPY, 'nope', 'positive')).error === 'Marker not found'
   )
-  check('Other folders refused', (await send('toggleMarkerCategory', '..', point.id, 'positive')).error === 'Unknown session')
+  check(
+    'Other folders refused',
+    (await send('toggleMarkerCategory', '..', point.id, 'positive')).error === 'Unknown session'
+  )
 
   // --- Notes window ------------------------------------------------------------------------
   await main.eval('window.api.openNotesWindow()')

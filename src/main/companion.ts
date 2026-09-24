@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
@@ -6,9 +6,11 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { networkInterfaces } from 'node:os'
 import { extname, join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import QRCode from 'qrcode'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type { CompanionInfo, CompanionSettings, CompanionState, SessionCommandName } from '../shared/types'
+import { devServerUrl } from './appPages'
 import { serveFile, sessionFilePath } from './media'
 
 const COOKIE = 'trs_companion'
@@ -79,9 +81,25 @@ function isPublicNetwork(): Promise<boolean> {
   })
 }
 
+/** Constant-time comparison; hashing first gives equal lengths whatever the client sent. */
 function sameToken(a: string | undefined, b: string): boolean {
-  if (!a || a.length !== b.length) return false
-  return timingSafeEqual(Buffer.from(a), Buffer.from(b))
+  if (!a) return false
+  const digest = (value: string): Buffer => createHash('sha256').update(value).digest()
+  return timingSafeEqual(digest(a), digest(b))
+}
+
+/** decodeURIComponent throws on malformed input such as "%E0". */
+function decodePart(part: string): string | null {
+  try {
+    return decodeURIComponent(part)
+  } catch {
+    return null
+  }
+}
+
+function decodeParts(path: string): string[] | null {
+  const parts = path.split('/').filter(Boolean).map(decodePart)
+  return parts.every((part): part is string => part !== null) ? parts : null
 }
 
 function cookieToken(req: IncomingMessage): string | undefined {
@@ -141,12 +159,25 @@ export class CompanionServer {
       this.hooks.changed()
       return
     }
-    const server = createServer((req, res) => void this.handle(req, res))
+    // Anything a client sends must never throw out of here: the server runs in the app's main process.
+    const server = createServer((req, res) => {
+      this.handle(req, res).catch((error: unknown) => {
+        console.warn('[companion] request failed', error)
+        if (!res.headersSent) res.writeHead(400)
+        res.end()
+      })
+    })
     const sockets = new WebSocketServer({ noServer: true })
     server.on('upgrade', (req, socket, head) => {
+      socket.on('error', () => undefined)
       const origin = req.headers.origin
-      const allowed =
-        req.url === '/ws' && sameToken(cookieToken(req), this.token()) && origin === `http://${req.headers.host}`
+      let allowed = false
+      try {
+        allowed =
+          req.url === '/ws' && sameToken(cookieToken(req), this.token()) && origin === `http://${req.headers.host}`
+      } catch {
+        allowed = false
+      }
       if (!allowed) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
         socket.destroy()
@@ -198,6 +229,7 @@ export class CompanionServer {
   }
 
   private onClient(ws: WebSocket): void {
+    ws.on('error', (error) => console.warn('[companion] socket error', error.message))
     ws.send(JSON.stringify({ type: 'state', state: this.hooks.state() }))
     this.hooks.changed()
     ws.on('close', () => this.hooks.changed())
@@ -223,7 +255,12 @@ export class CompanionServer {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? '/', 'http://localhost')
+    // A request line like "GET //x" is not a valid path for URL.
+    if (!req.url?.startsWith('/') || req.url.startsWith('//')) {
+      res.writeHead(400).end()
+      return
+    }
+    const url = new URL(req.url, 'http://localhost')
     const device = `${req.socket.remoteAddress} ${req.headers['user-agent'] ?? ''}`
     if (url.pathname === '/' || url.pathname === '/pair')
       console.info(`[companion] ${req.method} ${url.pathname} from ${device}`)
@@ -267,17 +304,21 @@ export class CompanionServer {
     }
 
     if (url.pathname.startsWith('/media/')) {
-      const file = sessionFilePath(
-        url.pathname.slice('/media/'.length).split('/').filter(Boolean).map(decodeURIComponent)
-      )
+      const parts = decodeParts(url.pathname.slice('/media/'.length))
+      const file = parts && sessionFilePath(parts)
       if (!file) {
         res.writeHead(403).end()
         return
       }
       const response = await serveFile(file, req.headers.range ?? null)
       res.writeHead(response.status, Object.fromEntries(response.headers))
-      if (response.body) Readable.fromWeb(response.body as import('node:stream/web').ReadableStream).pipe(res)
-      else res.end()
+      // pipeline, not pipe: an aborted download (seek, closed page) must close the file,
+      // or Windows refuses to rename or delete the session folder afterwards.
+      if (response.body) {
+        await pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), res).catch(
+          () => undefined
+        )
+      } else res.end()
       return
     }
 
@@ -286,7 +327,7 @@ export class CompanionServer {
 
   /** The Companion page is a second entry of the renderer build. */
   private async serveApp(path: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const devServer = process.env['ELECTRON_RENDERER_URL']
+    const devServer = devServerUrl()
     if (devServer) {
       const target = new URL(path + (req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : ''), devServer)
       const upstream = httpRequest(
@@ -302,8 +343,9 @@ export class CompanionServer {
       return
     }
     const root = resolve(join(__dirname, '../renderer'))
-    const file = resolve(root, '.' + decodeURIComponent(path))
-    if (!file.startsWith(root + sep)) {
+    const decoded = decodePart(path)
+    const file = decoded === null ? null : resolve(root, '.' + decoded)
+    if (!file || !file.startsWith(root + sep)) {
       res.writeHead(403).end()
       return
     }
@@ -314,7 +356,7 @@ export class CompanionServer {
         'Content-Type': STATIC_TYPES[extname(file)] ?? 'application/octet-stream',
         'Content-Length': info.size
       })
-      createReadStream(file).pipe(res)
+      await pipeline(createReadStream(file), res).catch(() => undefined)
     } catch {
       res.writeHead(404).end()
     }

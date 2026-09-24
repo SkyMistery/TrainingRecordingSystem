@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import { extname, resolve, sep } from 'node:path'
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { protocol } from 'electron'
 import { MEDIA_SCHEME } from '../shared/media'
@@ -25,7 +25,10 @@ export function registerMediaScheme(): void {
 export function sessionFilePath(parts: string[]): string | null {
   const root = resolve(getSettings().sessionsDir)
   const file = resolve(root, ...parts)
-  return file.startsWith(root + sep) ? file : null
+  // relative() also works when the sessions folder is a drive root (E:\), unlike a prefix check.
+  const inside = relative(root, file)
+  const escapes = inside === '' || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)
+  return escapes ? null : file
 }
 
 /**
@@ -73,7 +76,13 @@ export function handleMediaScheme(): void {
   protocol.handle(MEDIA_SCHEME, (request) => {
     const url = new URL(request.url)
     if (url.hostname !== 'sessions') return new Response('Not found', { status: 404 })
-    const file = sessionFilePath(url.pathname.split('/').filter(Boolean).map(decodeURIComponent))
+    let parts: string[]
+    try {
+      parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
+    } catch {
+      return new Response('Bad request', { status: 400 })
+    }
+    const file = sessionFilePath(parts)
     if (!file) return new Response('Forbidden', { status: 403 })
     return serveFile(file, request.headers.get('range'))
   })
