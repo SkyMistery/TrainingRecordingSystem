@@ -138,6 +138,14 @@ notes) and the transcription model. Models are downloaded once:
 
 Transcription runs on your PC: nothing is sent online.
 
+**Muting yourself in Discord while you dictate.** Set your voice note key as
+**Push to Mute** in Discord (User Settings → Keybinds): holding it for a note
+also mutes you in the call. For notes dictated with the Companion's or the
+app's **Hold to dictate** button, turn on **Also press … for notes started
+from a button** in Setup → Voice notes: TRS then holds the key for you while
+the note is recorded, so Discord mutes you there too. Like a real press, the
+key also reaches the window in front.
+
 ## 2. Recording a session
 
 1. **Sessions → New session**: trainee VID (and name), position, session
@@ -223,7 +231,8 @@ and buttons to adjust a marker to the current position ("Start at / End at").
   **Show the QR code**, since that window may be shared on Discord.
 
 During a recording the Companion also offers Marker, Range and Hold-to-dictate
-buttons (the PC's microphone records the note).
+buttons (the PC's microphone records the note; see "Muting yourself in Discord"
+under Voice notes).
 
 #### Tablet doesn't connect?
 

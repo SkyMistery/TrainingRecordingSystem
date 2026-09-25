@@ -1,6 +1,41 @@
 import { EventEmitter } from 'node:events'
+import koffi from 'koffi'
 import { uIOhook, UiohookKey, type UiohookKeyboardEvent, type UiohookMouseEvent } from 'uiohook-napi'
 import type { Hotkey } from '../shared/types'
+
+// SendInput for mouse buttons (uiohook only simulates keys).
+const MOUSEINPUT = koffi.struct('MOUSEINPUT', {
+  dx: 'long',
+  dy: 'long',
+  mouseData: 'uint32_t',
+  dwFlags: 'uint32_t',
+  time: 'uint32_t',
+  dwExtraInfo: 'uintptr_t'
+})
+// The union's largest member is MOUSEINPUT, so this has the size of INPUT.
+const INPUT = koffi.struct('INPUT', { type: 'uint32_t', mi: MOUSEINPUT })
+const SendInput = koffi.load('user32.dll').func('uint32_t __stdcall SendInput(uint32_t count, INPUT *inputs, int size)')
+const INPUT_MOUSE = 0
+const MOUSEEVENTF_MIDDLEDOWN = 0x20
+const MOUSEEVENTF_MIDDLEUP = 0x40
+const MOUSEEVENTF_XDOWN = 0x80
+const MOUSEEVENTF_XUP = 0x100
+
+function sendMouseButton(button: number, down: boolean): void {
+  const middle = button === 3
+  const flags = middle
+    ? down
+      ? MOUSEEVENTF_MIDDLEDOWN
+      : MOUSEEVENTF_MIDDLEUP
+    : down
+      ? MOUSEEVENTF_XDOWN
+      : MOUSEEVENTF_XUP
+  const mi = { dx: 0, dy: 0, mouseData: middle ? 0 : button - 3, dwFlags: flags, time: 0, dwExtraInfo: 0 }
+  if (SendInput(1, [{ type: INPUT_MOUSE, mi }], koffi.sizeof(INPUT)) !== 1) throw new Error('SendInput failed')
+}
+
+/** Simulated presses come back through the hook: they are ignored if they arrive within this time. */
+const SYNTHETIC_EVENT_MS = 1000
 
 const KEY_NAMES = new Map<number, string>(Object.entries(UiohookKey).map(([name, code]) => [code as number, name]))
 
@@ -49,6 +84,10 @@ export class GlobalHotkeys extends EventEmitter<HotkeyEvents> {
   private readonly held = new Map<string, Hotkey | null>()
   private capture: ((hotkey: Hotkey | null) => void) | null = null
   private started = false
+  /** Deadlines of the simulated presses and releases still to come back through the hook, by event. */
+  private readonly synthetic = new Map<string, number[]>()
+  /** Releases of the hotkeys held by hold(). */
+  private readonly holds = new Set<() => void>()
 
   start(): void {
     if (this.started) return
@@ -61,9 +100,63 @@ export class GlobalHotkeys extends EventEmitter<HotkeyEvents> {
   }
 
   stop(): void {
+    for (const release of [...this.holds]) release()
     if (!this.started) return
     uIOhook.stop()
     this.started = false
+  }
+
+  /**
+   * Presses the hotkey (with its modifiers) as if the user held it down, so
+   * other apps bound to the same key react too, e.g. Discord's push-to-mute.
+   * These presses don't trigger the app's own hotkeys. Returns the release,
+   * which never throws and is safe to call more than once; stop() releases everything.
+   */
+  hold(hotkey: Hotkey): () => void {
+    const modifiers: number[] = []
+    if (hotkey.ctrl) modifiers.push(UiohookKey.Ctrl)
+    if (hotkey.alt) modifiers.push(UiohookKey.Alt)
+    if (hotkey.shift) modifiers.push(UiohookKey.Shift)
+    const press = (down: boolean): void => {
+      this.expect(`${down ? 'down' : 'up'}:${hotkey.device}:${hotkey.code}`)
+      if (hotkey.device === 'keyboard') uIOhook.keyToggle(hotkey.code, down ? 'down' : 'up')
+      else sendMouseButton(hotkey.code, down)
+    }
+    const releaseModifiers = (): void => {
+      for (const key of [...modifiers].reverse()) uIOhook.keyToggle(key, 'up')
+    }
+    for (const key of modifiers) uIOhook.keyToggle(key, 'down')
+    try {
+      press(true)
+    } catch (error) {
+      releaseModifiers()
+      throw error
+    }
+    const release = (): void => {
+      if (!this.holds.delete(release)) return
+      try {
+        press(false)
+        releaseModifiers()
+      } catch (error) {
+        console.error('Could not release the held hotkey', error)
+      }
+    }
+    this.holds.add(release)
+    return release
+  }
+
+  private expect(event: string): void {
+    this.synthetic.set(event, [...(this.synthetic.get(event) ?? []), Date.now() + SYNTHETIC_EVENT_MS])
+  }
+
+  /** True for an event caused by hold(), which is then forgotten. */
+  private isSynthetic(event: string): boolean {
+    const now = Date.now()
+    const pending = (this.synthetic.get(event) ?? []).filter((deadline) => deadline > now)
+    const found = pending.shift() !== undefined
+    if (pending.length) this.synthetic.set(event, pending)
+    else this.synthetic.delete(event)
+    return found
   }
 
   /** Resolves with the next key or mouse button pressed; Escape cancels (null). */
@@ -85,6 +178,7 @@ export class GlobalHotkeys extends EventEmitter<HotkeyEvents> {
     if (device === 'keyboard' && MODIFIER_KEYS.has(code)) return
     if (device === 'mouse' && code < MIN_MOUSE_BUTTON) return
     const id = `${device}:${code}`
+    if (this.isSynthetic(`down:${id}`)) return
     if (this.held.has(id)) return // auto-repeat
 
     const hotkey = toHotkey(device, code, e)
@@ -101,6 +195,7 @@ export class GlobalHotkeys extends EventEmitter<HotkeyEvents> {
 
   private onUp(device: Hotkey['device'], code: number): void {
     const id = `${device}:${code}`
+    if (this.isSynthetic(`up:${id}`)) return
     if (!this.held.has(id)) return
     const hotkey = this.held.get(id)
     this.held.delete(id)

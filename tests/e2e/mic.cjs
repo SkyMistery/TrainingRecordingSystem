@@ -1,5 +1,7 @@
 // Voice notes with a stale microphone id, in an isolated app instance (own
-// settings folder), against the real OBS and microphone.
+// settings folder), against the real OBS and microphone. Also checks that a
+// note started from a button holds the voice-note key (Discord push-to-mute)
+// only when "holdHotkeyFromButtons" is on, without starting a second note.
 const { spawn } = require('node:child_process')
 const { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } = require('node:fs')
 const { join } = require('node:path')
@@ -18,6 +20,7 @@ const real = JSON.parse(readFileSync(join(process.env.APPDATA, 'Training Recordi
 const key = (code, label) => ({ device: 'keyboard', code, ctrl: false, alt: false, shift: false, label })
 
 async function runCase(name, notes) {
+  const holdKey = notes.holdHotkeyFromButtons
   rmSync(USERDATA, { recursive: true, force: true })
   mkdirSync(USERDATA, { recursive: true })
   writeFileSync(
@@ -94,11 +97,25 @@ async function runCase(name, notes) {
     uIOhook.keyToggle(99, 'up')
     await sleep(2000)
     // Also through the UI command, like the "Hold to dictate" button.
+    const keyEvents = []
+    const onDown = (e) => e.keycode === 99 && keyEvents.push('down')
+    const onUp = (e) => e.keycode === 99 && keyEvents.push('up')
+    uIOhook.on('keydown', onDown)
+    uIOhook.on('keyup', onUp)
     await evaluate(`window.api.command('startNote')`)
     await sleep(1500)
+    const heldDuringNote = keyEvents.join(',')
     await evaluate(`window.api.command('stopNote')`)
     await sleep(2000)
+    uIOhook.off('keydown', onDown)
+    uIOhook.off('keyup', onUp)
     uIOhook.stop()
+    const expected = holdKey ? ['down', 'down,up'] : ['', '']
+    check(
+      `${name}: button note ${holdKey ? 'holds' : 'does not press'} the voice-note key`,
+      heldDuringNote === expected[0] && keyEvents.join(',') === expected[1],
+      `during: [${heldDuringNote}], after: [${keyEvents.join(',')}]`
+    )
     state = await evaluate('window.api.getState()')
     folder = join(process.env.USERPROFILE, 'Documents', 'IVAO TRS', 'Sessions', state.recording.folderName)
     const notes = state.recording.markers.flatMap((m) => m.notes)
@@ -123,12 +140,14 @@ async function runCase(name, notes) {
 ;(async () => {
   const first = await runCase('stale id, same name', {
     micDeviceId: 'stale-device-id-from-another-origin',
-    micLabel: real.notes.micLabel
+    micLabel: real.notes.micLabel,
+    holdHotkeyFromButtons: true
   })
   check('stale id, same name: no microphone warning', first.microphoneError === null, String(first.microphoneError))
   const second = await runCase('unknown microphone', {
     micDeviceId: 'stale-device-id',
-    micLabel: 'A microphone that does not exist'
+    micLabel: 'A microphone that does not exist',
+    holdHotkeyFromButtons: false
   })
   check(
     'unknown microphone: falls back and says so',

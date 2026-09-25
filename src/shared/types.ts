@@ -175,6 +175,11 @@ export interface NoteSettings {
   transcribe: boolean
   /** A note joins the latest marker if it was placed less than this long ago; otherwise it creates one. */
   attachWindowSeconds: number
+  /**
+   * A note started from a button (app or Companion) also holds the voice-note
+   * hotkey down, so a voice chat using it as push-to-mute (Discord) mutes the trainer.
+   */
+  holdHotkeyFromButtons: boolean
 }
 
 export interface ModelDownload {

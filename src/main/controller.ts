@@ -75,6 +75,8 @@ interface Dictation {
   /** Settles when the start (capture, marker, muting) is complete; the stop waits for it. */
   started: Promise<void>
   limit: NodeJS.Timeout | null
+  /** Releases the voice-note hotkey held for a note started from a button. */
+  releaseHotkey: (() => void) | null
 }
 
 /** Keeps the recording muted a moment longer: the voice trails off after release. */
@@ -752,7 +754,7 @@ export class Controller {
     } else if (sameHotkey(hotkey, hotkeys.range)) {
       this.run(() => this.toggleRange())
     } else if (sameHotkey(hotkey, hotkeys.voiceNote)) {
-      this.run(() => this.startNote())
+      this.run(() => this.startNote(true))
     } else {
       const category = categories.find((item) => sameHotkey(hotkey, item.hotkey))
       if (category) this.run(() => this.tagLatestMarker(category.id))
@@ -864,8 +866,10 @@ export class Controller {
   /**
    * Push-to-talk pressed: the note goes to the open range, or to the latest
    * marker if it is recent enough; otherwise a new marker is created for it.
+   * `fromHotkey`: the trainer is holding the hotkey; otherwise (a button in the
+   * app or the Companion) the hotkey may be held for them, for Discord's push-to-mute.
    */
-  private async startNote(): Promise<void> {
+  private async startNote(fromHotkey = false): Promise<void> {
     const active = this.requireActive()
     if (this.dictation) return
     const now = Math.round(this.recorder.currentTimeMs())
@@ -883,7 +887,8 @@ export class Controller {
       started: Promise.resolve(),
       limit: setTimeout(() => {
         if (this.dictation === dictation) this.run(() => this.stopNote())
-      }, MAX_DICTATION_MS)
+      }, MAX_DICTATION_MS),
+      releaseHotkey: fromHotkey ? null : this.holdVoiceNoteHotkey()
     }
     // The release can arrive before this finishes: stopNote waits for `started`.
     dictation.started = (async () => {
@@ -910,8 +915,21 @@ export class Controller {
       await dictation.started
     } catch (error) {
       if (this.dictation === dictation) this.dictation = null
+      dictation.releaseHotkey?.()
       this.publishRecording()
       throw error
+    }
+  }
+
+  /** Holds the voice-note hotkey if the trainer asked for it; returns its release. */
+  private holdVoiceNoteHotkey(): (() => void) | null {
+    const hotkey = getSettings().markers.hotkeys.voiceNote
+    if (!hotkey || !getSettings().notes.holdHotkeyFromButtons) return null
+    try {
+      return this.hotkeys.hold(hotkey)
+    } catch (error) {
+      console.error('Could not hold the voice note hotkey', error)
+      return null
     }
   }
 
@@ -921,6 +939,7 @@ export class Controller {
     if (!dictation || !active) return
     this.dictation = null
     if (dictation.limit) clearTimeout(dictation.limit)
+    dictation.releaseHotkey?.()
     this.publishRecording()
     this.feedback('noteEnd')
     const started = await dictation.started.then(

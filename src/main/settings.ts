@@ -76,7 +76,8 @@ const defaults = (): Settings => ({
     model: 'small',
     language: 'auto',
     transcribe: true,
-    attachWindowSeconds: 60
+    attachWindowSeconds: 60,
+    holdHotkeyFromButtons: false
   },
   companion: { enabled: true, lan: false, port: 17645 },
   companionToken: randomBytes(24).toString('hex'),

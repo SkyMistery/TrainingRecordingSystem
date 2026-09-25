@@ -147,6 +147,22 @@ export function VoiceNotesCard({ state, section }: { state: AppState; section: S
         {micError && <span className="text-xs text-semantic-red-600">{micError}</span>}
       </div>
 
+      <div className="flex flex-col gap-1.5">
+        <label className="flex items-center gap-3 text-sm">
+          <Switch
+            checked={settings.holdHotkeyFromButtons}
+            disabled={!pttLabel}
+            onCheckedChange={(holdHotkeyFromButtons) => save({ holdHotkeyFromButtons })}
+          />
+          Also press {pttLabel ? <strong>{pttLabel}</strong> : 'the voice note hotkey'} for notes started from a button
+        </label>
+        <span className="text-xs text-muted-foreground">
+          For voice chats: set the same key as push-to-mute in Discord, and it mutes you while you dictate from the
+          Companion (tablet, phone) or the button in the app, as it does when you hold the key. The key also reaches the
+          window in front, as when you press it yourself.
+        </span>
+      </div>
+
       <div className="flex flex-col gap-3">
         <label className="flex items-center gap-3 text-sm">
           <Switch checked={settings.transcribe} onCheckedChange={(transcribe) => save({ transcribe })} />

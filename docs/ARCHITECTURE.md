@@ -43,7 +43,8 @@ Main process (src/main)
  ├─ files.ts           writeJsonAtomic (temp file, fsync, rename retried
  │                     while Windows holds the file), renameWithRetry
  ├─ hotkeys.ts         GlobalHotkeys (uiohook): down/up, no auto-repeat,
- │                     capture mode for binding keys
+ │                     capture mode for binding keys, hold() simulating a
+ │                     press (uiohook keys, SendInput mouse buttons)
  ├─ audioWindow.ts     AudioCapture: hidden window keeping the mic open
  ├─ transcriber.ts     model downloads, whisper.cpp job queue (one at a time)
  ├─ companion.ts       CompanionServer: HTTP + WebSocket, pairing, media
@@ -164,6 +165,13 @@ ignored (and a marker created only for them is removed). The release waits
 for the start to finish (`Dictation.started`), so muted OBS sources are always
 unmuted; a dictation ends by itself after 3 minutes, and a Companion
 push-to-talk ends when that device disconnects (ping heartbeat).
+
+A note started from a button (app or Companion) holds the voice-note hotkey
+for its whole length when `notes.holdHotkeyFromButtons` is on, so a voice
+chat using that key as push-to-mute (Discord) mutes the trainer as with a
+real press. GlobalHotkeys ignores the simulated press and release when they
+come back through its own hook (expected events, 1 s deadline); the key is
+released when the note stops, fails to start, or the hotkeys stop (quit).
 
 Open/close of the microphone carry a generation number: a stream that opens
 after the session ended is closed at once. An unplugged microphone
