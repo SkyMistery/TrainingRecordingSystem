@@ -32,7 +32,7 @@ Status (2026-09-25):
 | v1.1 feedback | done — v1.1.0: several categories per marker, folder names with trainee and session type, Training/Exam session type |
 | v1.2 feedback | done — v1.2.0: connect to OBS from the top bar, edit a recorded session's details (folders renamed), plus a full robustness and security review (recording recovery, safer saves, OBS profile protection, privacy of notes on screen); v1.2.1: app updates shown in the top bar |
 | v1.3 terms of use | done — v1.3.0: terms of use accepted on first start, recording consent confirmed for every session (IVAO Rule 2.1.12) |
-| v1.4 feedback | done — v1.4.0: hidden windows (Aurora COM BOX covered in recordings and screenshots, other windows configurable), 5× and 10× speed, 10-second jumps; v1.4.1: new TRS logo (app icon, headers, favicon) |
+| v1.4 feedback | done — v1.4.0: hidden windows (Aurora COM BOX covered in recordings and screenshots, other windows configurable), 5× and 10× speed, 10-second jumps; v1.4.1: new TRS logo (app icon, headers, favicon); v1.4.2: notes from the Companion or app button can hold the voice-note key (Discord push-to-mute) |
 
 Next: v1.4 is in use by the IVAO Italy trainers; their feedback is collected
 on Discord and drives the next release. Possibly later: the native recorder
