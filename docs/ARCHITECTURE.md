@@ -260,6 +260,8 @@ the terms change in substance.
   commit; the token is given only to the steps that need it.
 - Electron fuses (electron-builder.yml): no run-as-Node, no NODE_OPTIONS or
   inspector arguments, app.asar only and with integrity validation.
-- The app icon is `build/icon.png` (512 px, rendered from the division
-  symbol); electron-builder makes the .ico. The executable's copyright comes
+- The app icon is `build/icon.png` (512 px, rendered from the TRS logo,
+  `src/renderer/src/assets/trs-logo.svg`, also the favicon and the header
+  logo); electron-builder makes the .ico. The credits footer uses the IVAO
+  Italy division symbol. The executable's copyright comes
   from `copyright` in electron-builder.yml.

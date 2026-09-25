@@ -14,7 +14,7 @@ import {
   Sun
 } from 'lucide-react'
 import type { CompanionInfo, CompanionSettings, ObsStatus, UpdateState } from '@shared/types'
-import symbol from '../assets/it-symbol-white.svg'
+import logo from '../assets/trs-logo.svg'
 import { CompanionPairing } from './CompanionCard'
 import { expandSection } from './SetupSection'
 import type { ThemePreference } from '@shared/theme'
@@ -296,7 +296,7 @@ export function Header(props: HeaderProps): React.JSX.Element {
     <header className="flex items-center justify-between gap-4 bg-atmos-700 px-4 py-3 text-white dark:bg-fuselage-800">
       <div className="flex items-center gap-6">
         <div className="flex items-center gap-3">
-          <img src={symbol} alt="IVAO Italy" className="size-8" />
+          <img src={logo} alt="Training Recording System" className="size-8" />
           <span className="font-head text-lg font-semibold">Training Recording System</span>
           {props.version && <span className="text-xs text-white/70">v{props.version}</span>}
         </div>

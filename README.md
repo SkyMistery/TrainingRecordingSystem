@@ -84,8 +84,8 @@ models.
 
 ## Credits
 
-Made by Carmine (704798) and the IVAO Italy Division. The app icon and logo
-are the IVAO Italy division symbol.
+Made by Carmine (704798) and the IVAO Italy Division. The credits footer
+shows the IVAO Italy division symbol.
 
 ## Licence
 

@@ -17,9 +17,10 @@ Guidance for working on this repository (Training Recording System, TRS).
   window; Companion page for notes on a second screen/tablet; offline Whisper
   transcription; range markers yes, clip export no; debrief report is only a
   proposal (docs/FUTURE.md); UI follows brand.ivao.aero + Atmosphere with
-  Day/Night; the app uses the IVAO Italy division symbol supplied by the
-  trainer (src/renderer/src/assets, build/icon.png), not the main IVAO logo;
-  every page (app and Companion) ends with the credits footer "made by
+  Day/Night; the app's logo is the TRS microphone logo supplied by the
+  trainer (assets/trs-logo.svg, public/icon.svg, build/icon.png: headers,
+  favicon, exe icon); the footer keeps the IVAO Italy division symbol, never
+  the main IVAO logo; every page (app and Companion) ends with the credits footer "made by
   Carmine (704798) and the IVAO Italy Division" + "© 2026 Carmine (704798)" (AppFooter); the
   copyright holder (footer, LICENSE, exe) is Carmine alone.
 - Legal: docs/TERMS.md is written by Carmine in the first person (not IVAO);

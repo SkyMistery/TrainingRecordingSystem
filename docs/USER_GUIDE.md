@@ -197,8 +197,8 @@ so you can share it on Discord.
 | F | full window (Esc to exit) |
 
 The buttons under the video also jump 5 or 10 s, and set the speed from 0.5×
-to 10× (5× and 10× to skim through quiet parts; the sound may be muted at
-those speeds).
+to 10× (5× and 10× to skim through quiet parts; the sound keeps playing at
+every speed).
 
 Zooming in on a label keeps it readable even through Discord's compression
 (720p without Nitro).

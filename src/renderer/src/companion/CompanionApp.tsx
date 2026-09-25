@@ -31,7 +31,7 @@ import { Timeline } from '../components/Timeline'
 import { formatDuration } from '../format'
 import { useNow } from '../hooks'
 import { useCompanionConnection, type ConnectionStatus } from './connection'
-import symbol from '../assets/it-symbol-white.svg'
+import logo from '../assets/trs-logo.svg'
 import { AppFooter } from '../components/AppFooter'
 
 /** Day/Night for the Companion page, remembered by this browser. */
@@ -351,7 +351,7 @@ export function CompanionApp(): React.JSX.Element {
     <div className="flex min-h-full flex-col bg-body">
       <header className="sticky top-0 z-10 flex items-center justify-between gap-3 bg-atmos-700 px-4 py-3 text-white dark:bg-fuselage-800">
         <span className="flex items-center gap-2 font-head font-semibold">
-          <img src={symbol} alt="IVAO Italy" className="size-7" />
+          <img src={logo} alt="Training Recording System" className="size-7" />
           Trainer notes
         </span>
         <div className="flex items-center gap-3">
