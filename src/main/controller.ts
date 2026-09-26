@@ -8,6 +8,7 @@ import type {
   CompanionState,
   PlayerCommand,
   PlayerState,
+  PttTarget,
   SessionCommandName,
   SessionCommands,
   SessionDetails,
@@ -79,6 +80,10 @@ interface Dictation {
   releaseHotkey: (() => void) | null
 }
 
+const PTT_TARGETS: PttTarget[] = ['voiceChat', 'aurora']
+/** A Companion push-to-talk key is released by itself after this long. */
+const PTT_MAX_MS = 5 * 60_000
+
 /** Keeps the recording muted a moment longer: the voice trails off after release. */
 const UNMUTE_DELAY_MS = 300
 /** Longest text accepted for a note (a few pages). */
@@ -97,6 +102,8 @@ export class Controller {
   private readonly recorder: Recorder
   private readonly windowMasks: WindowMasks
   private readonly hotkeys = new GlobalHotkeys()
+  /** Push-to-talk keys held for the Companion's buttons. */
+  private readonly pttHolds = new Map<PttTarget, { release: () => void; limit: NodeJS.Timeout }>()
   private active: ActiveSession | null = null
   private dictation: Dictation | null = null
   /** Set while a session is being ended (see endSession). */
@@ -174,7 +181,9 @@ export class Controller {
       })
       this.transcriber.enqueue(this.sessionFolder(folderName), noteId)
     },
-    playerCommand: async (command) => this.sendPlayerCommand(command)
+    playerCommand: async (command) => this.sendPlayerCommand(command),
+    holdPtt: async (target) => this.holdPtt(target),
+    releasePtt: async (target) => this.releasePtt(target)
   }
 
   /** `onRecordingChanged` lets the main window hide itself from screen capture while recording. */
@@ -376,10 +385,19 @@ export class Controller {
       if (this.state.review) this.patch({ review: { ...this.state.review, player } })
     })
     handle('companion:save', async (patch: Partial<CompanionSettings>) => {
-      const companion: CompanionSettings = { ...getSettings().companion, ...patch }
+      const previous = getSettings().companion
+      const companion: CompanionSettings = { ...previous, ...patch }
       await updateSettings({ companion })
       this.patch({ companionSettings: companion })
-      await this.companion.restart()
+      if (patch.pttKeys) for (const target of [...this.pttHolds.keys()]) this.releasePtt(target)
+      // Only these need the server restarted, which disconnects the devices.
+      if (
+        companion.enabled !== previous.enabled ||
+        companion.lan !== previous.lan ||
+        companion.port !== previous.port
+      ) {
+        await this.companion.restart()
+      }
     })
     handle('companion:newToken', async () => {
       // Unpairs every device: they need the new link or QR code.
@@ -391,7 +409,7 @@ export class Controller {
       openNotesWindow(this.requireCompanion().pairUrl(), this.state.capture.display?.name)
     )
     handle('companion:openBrowser', () => shell.openExternal(this.requireCompanion().pairUrl()))
-    handle('hotkeys:capture', () => this.hotkeys.captureNext())
+    handle('hotkeys:capture', (modifiersAlone?: boolean) => this.hotkeys.captureNext(modifiersAlone === true))
     handle('hotkeys:cancelCapture', () => this.hotkeys.cancelCapture())
   }
 
@@ -1098,12 +1116,39 @@ export class Controller {
   }
 
   private companionState(): CompanionState {
+    const { pttKeys } = this.state.companionSettings
     return {
       recording: this.state.recording,
       review: this.state.review,
       categories: this.state.markerSettings.categories,
-      voiceNoteHotkey: this.state.markerSettings.hotkeys.voiceNote?.label ?? null
+      voiceNoteHotkey: this.state.markerSettings.hotkeys.voiceNote?.label ?? null,
+      pttKeys: PTT_TARGETS.flatMap((target) => {
+        const key = pttKeys[target]
+        return key ? [{ target, label: key.label }] : []
+      })
     }
+  }
+
+  // --- Companion push-to-talk --------------------------------------------------------
+
+  /** Holds the voice chat's or Aurora's push-to-talk key while the Companion's button is held. */
+  private holdPtt(target: PttTarget): void {
+    if (!PTT_TARGETS.includes(target)) throw new Error('Unknown push-to-talk button')
+    const key = getSettings().companion.pttKeys[target]
+    if (!key) throw new Error('No push-to-talk key set: see Setup → Companion')
+    if (this.pttHolds.has(target)) return
+    const release = this.hotkeys.hold(key)
+    // A release that never arrives (a phone locked mid-press) must not keep talking.
+    const limit = setTimeout(() => this.releasePtt(target), PTT_MAX_MS)
+    this.pttHolds.set(target, { release, limit })
+  }
+
+  private releasePtt(target: PttTarget): void {
+    const hold = this.pttHolds.get(target)
+    if (!hold) return
+    this.pttHolds.delete(target)
+    clearTimeout(hold.limit)
+    hold.release()
   }
 
   /** Transcribes notes left over from a previous run (app closed mid-queue) and recovers orphaned recordings. */

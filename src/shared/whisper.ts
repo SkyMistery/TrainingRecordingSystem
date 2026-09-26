@@ -34,3 +34,6 @@ export const WHISPER_LANGUAGES: { value: string; label: string }[] = [
   { value: 'ru', label: 'Русский' },
   { value: 'ar', label: 'العربية' }
 ]
+
+/** The trainer's own transcription words are cut here: whisper only keeps the end of a long prompt anyway. */
+export const MAX_VOCABULARY_LENGTH = 400

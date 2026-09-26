@@ -12,8 +12,13 @@
   `scripts/fetch-whisper.mjs`) for offline transcription; models downloaded at
   runtime into `%APPDATA%\Training Recording System\models` from a pinned
   Hugging Face revision, checked against size and sha256 (`MODEL_FILES`).
-  On silence whisper tends to repeat the vocabulary prompt: a transcript made
-  only of prompt words (3 or more) counts as no speech.
+  The prompt (`transcriptHints.ts`) is written in the dictation language
+  (Italian or English) with English ATC terms, the ICAO alphabet and the
+  trainer's `notes.vocabulary`, in ASCII only (see the ANSI note below).
+  On silence whisper tends to repeat a stretch of the prompt: a transcript of
+  3+ words found in the prompt in the same order counts as no speech, and a
+  note whose loudest 100 ms stays under −50 dBFS isn't transcribed at all
+  (whisper makes up "Thank you"-like sentences on silence).
   whisper-cli reads its arguments in the ANSI code page, so it runs in the
   models folder with relative names (model file, temporary copy of the note):
   paths with Greek, Cyrillic… characters would not be found otherwise.
@@ -43,8 +48,10 @@ Main process (src/main)
  ├─ files.ts           writeJsonAtomic (temp file, fsync, rename retried
  │                     while Windows holds the file), renameWithRetry
  ├─ hotkeys.ts         GlobalHotkeys (uiohook): down/up, no auto-repeat,
- │                     capture mode for binding keys, hold() simulating a
- │                     press (uiohook keys, SendInput mouse buttons)
+ │                     capture mode for binding keys (modifiers alone for
+ │                     push-to-talk keys), hold() simulating a press
+ │                     (uiohook keys, SendInput extended keys and mouse)
+ ├─ transcriptHints.ts whisper prompt, prompt-echo and silence checks
  ├─ audioWindow.ts     AudioCapture: hidden window keeping the mic open
  ├─ transcriber.ts     model downloads, whisper.cpp job queue (one at a time)
  ├─ companion.ts       CompanionServer: HTTP + WebSocket, pairing, media
@@ -172,6 +179,16 @@ chat using that key as push-to-mute (Discord) mutes the trainer as with a
 real press. GlobalHotkeys ignores the simulated press and release when they
 come back through its own hook (expected events, 1 s deadline); the key is
 released when the note stops, fails to start, or the hotkeys stop (quit).
+Keys with an E0 scan code prefix (AltGr, Right Ctrl, arrows; uiohook codes
+0x0Exx/0xE0xx) are sent with SendInput and the extended flag: uiohook's
+`keyToggle` drops it, and Discord then sees AltGr as Left Alt.
+
+The Companion's push-to-talk buttons (`holdPtt`/`releasePtt`) hold
+`companion.pttKeys.voiceChat` or `.aurora` with the same `hold()`. The
+Companion server remembers which device holds each key: another device can't
+release it, and a device that disconnects releases it; the controller also
+releases it after 5 minutes. Saving push-to-talk keys doesn't restart the
+Companion server (only enabled/lan/port do), so devices stay connected.
 
 Open/close of the microphone carry a generation number: a stream that opens
 after the session ended is closed at once. An unplugged microphone

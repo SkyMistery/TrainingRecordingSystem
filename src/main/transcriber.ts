@@ -11,6 +11,7 @@ import { WHISPER_MODELS } from '../shared/whisper'
 import type { ModelDownload, Note, SessionFile, WhisperModelId } from '../shared/types'
 import type { SessionStore } from './sessions'
 import { getSettings } from './settings'
+import { buildPrompt, echoesPrompt, isSilent } from './transcriptHints'
 
 /** A fixed revision of the model repository, so the files match the digests below. */
 const MODEL_REVISION = '5359861c739e955e79d9a303bcbc70fb988958b1'
@@ -26,10 +27,6 @@ const MODEL_FILES: Record<WhisperModelId, { bytes: number; sha256: string }> = {
     sha256: '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2'
   }
 }
-
-/** Vocabulary hint: keeps ATC terms spelled the usual way. */
-const PROMPT =
-  'ATC training debrief. QNH, squawk, runway, taxi, holding point, handoff, readback, separation, callsign, FL, ILS, SID, STAR.'
 
 const TIMEOUT_MS = 5 * 60_000
 /** Name of the temporary note copies whisper reads (see runWhisper). */
@@ -56,23 +53,12 @@ function findNote(session: SessionFile, noteId: string): Note | undefined {
 }
 
 /** Whisper marks silence and noises with tokens like [BLANK_AUDIO] or (wind blowing). */
-function cleanTranscript(output: string): string {
+function cleanTranscript(output: string, prompt: string): string {
   const text = output
     .replace(/\[[^\]]*\]|\([^)]*\)/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-  return echoesPrompt(text) ? '' : text
-}
-
-const PROMPT_WORDS = new Set(PROMPT.toLowerCase().match(/[a-z0-9]+/g) ?? [])
-
-/**
- * On silence whisper tends to repeat the vocabulary hint ("QNH, squawk, runway…"): that is no speech.
- * A real one- or two-word note ("Readback") is kept.
- */
-function echoesPrompt(text: string): boolean {
-  const words = text.toLowerCase().match(/[a-z0-9]+/g) ?? []
-  return words.length >= 3 && words.every((word) => PROMPT_WORDS.has(word))
+  return echoesPrompt(text, prompt) ? '' : text
 }
 
 /**
@@ -223,7 +209,7 @@ export class Transcriber {
       while (this.queue.length > 0) {
         const job = this.queue.shift()!
         this.events.stateChanged()
-        const { model, language, transcribe } = getSettings().notes
+        const { model, language, transcribe, vocabulary } = getSettings().notes
         if (!transcribe || !this.available()) {
           await this.setStatus(job.folder, job.noteId, { status: 'pending' }).catch(() => undefined)
           continue
@@ -239,7 +225,7 @@ export class Transcriber {
           const session = await this.store.update(job.folder, () => undefined)
           const note = findNote(session, job.noteId)
           if (!note) continue
-          const transcript = await this.runWhisper(join(job.folder, note.audio), model, language)
+          const transcript = await this.runWhisper(join(job.folder, note.audio), model, language, vocabulary)
           await this.setStatus(job.folder, job.noteId, { status: 'done', transcript })
         } catch (error) {
           console.error('Transcription failed', error)
@@ -264,12 +250,19 @@ export class Transcriber {
    * It runs in the models folder instead, with plain relative names: the model
    * file and a temporary copy of the note.
    */
-  private async runWhisper(wavPath: string, model: WhisperModelId, language: string): Promise<string> {
+  private async runWhisper(
+    wavPath: string,
+    model: WhisperModelId,
+    language: string,
+    vocabulary: string
+  ): Promise<string> {
+    // Whisper makes words up on silence ("Grazie a tutti", "Thank you").
+    if (await isSilent(wavPath).catch(() => false)) return ''
     const dir = Transcriber.modelsDir()
     const copy = `${TEMP_PREFIX}${randomBytes(4).toString('hex')}.wav`
     await copyFile(wavPath, join(dir, copy))
     try {
-      return await this.spawnWhisper(dir, `ggml-${model}.bin`, copy, language)
+      return await this.spawnWhisper(dir, `ggml-${model}.bin`, copy, language, buildPrompt(language, vocabulary))
     } finally {
       await rm(join(dir, copy), { force: true }).catch(() => undefined)
     }
@@ -283,9 +276,15 @@ export class Transcriber {
     }
   }
 
-  private spawnWhisper(cwd: string, modelFile: string, wavFile: string, language: string): Promise<string> {
+  private spawnWhisper(
+    cwd: string,
+    modelFile: string,
+    wavFile: string,
+    language: string,
+    prompt: string
+  ): Promise<string> {
     const threads = String(Math.max(1, Math.min(4, availableParallelism() - 1)))
-    const args = ['-m', modelFile, '-f', wavFile, '-l', language, '-nt', '-np', '-t', threads, '--prompt', PROMPT]
+    const args = ['-m', modelFile, '-f', wavFile, '-l', language, '-nt', '-np', '-t', threads, '--prompt', prompt]
     return new Promise((resolve, reject) => {
       const child = spawn(Transcriber.binaryPath(), args, { windowsHide: true, cwd })
       const output: Buffer[] = []
@@ -296,7 +295,7 @@ export class Transcriber {
       child.on('error', reject)
       child.on('close', (code) => {
         clearTimeout(timer)
-        if (code === 0) resolve(cleanTranscript(Buffer.concat(output).toString('utf8')))
+        if (code === 0) resolve(cleanTranscript(Buffer.concat(output).toString('utf8'), prompt))
         else reject(new Error(`whisper exited with ${code}: ${Buffer.concat(errors).toString('utf8').slice(-500)}`))
       })
     })

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, Badge, Button, Input, Label, Progress, Select, Switch } from '@ivao/atmosphere-react'
+import { Alert, Badge, Button, Input, Label, Progress, Select, Switch, Textarea } from '@ivao/atmosphere-react'
 import { CircleAlert, Download, X } from 'lucide-react'
-import { WHISPER_LANGUAGES, WHISPER_MODELS } from '@shared/whisper'
+import { MAX_VOCABULARY_LENGTH, WHISPER_LANGUAGES, WHISPER_MODELS } from '@shared/whisper'
 import type { AppState, NoteSettings, WhisperModelId } from '@shared/types'
 import { usePatchSaver } from '../hooks'
 import { openMicrophone } from '../microphone'
@@ -82,6 +82,8 @@ export function VoiceNotesCard({ state, section }: { state: AppState; section: S
   const [micError, setMicError] = useState<string | null>(null)
   const [attach, setAttach] = useState(String(settings.attachWindowSeconds))
   useEffect(() => setAttach(String(settings.attachWindowSeconds)), [settings.attachWindowSeconds])
+  const [vocabulary, setVocabulary] = useState(settings.vocabulary)
+  useEffect(() => setVocabulary(settings.vocabulary), [settings.vocabulary])
 
   const saver = usePatchSaver(settings, window.api.saveNoteSettings)
   const save = useCallback(
@@ -287,6 +289,27 @@ export function VoiceNotesCard({ state, section }: { state: AppState; section: S
             <span className="text-sm text-muted-foreground">seconds, otherwise the note creates a new marker</span>
           </div>
         </div>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="vocabulary">Words to recognise</Label>
+        <Textarea
+          id="vocabulary"
+          className="min-h-16"
+          maxLength={MAX_VOCABULARY_LENGTH}
+          placeholder="e.g. LIRF, UXUTO 1Q, NASUM, Ryanair, Speedbird, reason"
+          value={vocabulary}
+          onChange={(event) => setVocabulary(event.target.value)}
+          onBlur={() => {
+            const value = vocabulary.trim()
+            if (value !== settings.vocabulary) save({ vocabulary: value })
+          }}
+        />
+        <span className="text-xs text-muted-foreground">
+          Callsigns, fixes, SIDs, airports and English words you use, separated by commas: they help the transcription
+          spell them right. Common ATC terms and the ICAO alphabet are already included. Notes already transcribed can
+          be transcribed again from the sessions list.
+        </span>
       </div>
     </SetupSection>
   )

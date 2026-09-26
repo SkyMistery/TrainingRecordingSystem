@@ -9,10 +9,18 @@ interface HotkeyInputProps {
   /** Label of another action already using the same key, if any. */
   conflict?: string | null
   label: string
+  /** A modifier key pressed alone (Right Ctrl, AltGr…) is a valid key: for push-to-talk keys. */
+  modifiersAlone?: boolean
 }
 
 /** Click, then press any key (with modifiers) or a middle/side mouse button. */
-export function HotkeyInput({ value, onChange, conflict, label }: HotkeyInputProps): React.JSX.Element {
+export function HotkeyInput({
+  value,
+  onChange,
+  conflict,
+  label,
+  modifiersAlone = false
+}: HotkeyInputProps): React.JSX.Element {
   const [capturing, setCapturing] = useState(false)
   // Read through a ref so re-renders during capture don't restart it.
   const onChangeRef = useRef(onChange)
@@ -21,7 +29,7 @@ export function HotkeyInput({ value, onChange, conflict, label }: HotkeyInputPro
   useEffect(() => {
     if (!capturing) return
     let cancelled = false
-    void window.api.captureHotkey().then((hotkey) => {
+    void window.api.captureHotkey(modifiersAlone).then((hotkey) => {
       if (cancelled) return
       setCapturing(false)
       if (hotkey) onChangeRef.current(hotkey)
@@ -30,7 +38,7 @@ export function HotkeyInput({ value, onChange, conflict, label }: HotkeyInputPro
       cancelled = true
       void window.api.cancelHotkeyCapture()
     }
-  }, [capturing])
+  }, [capturing, modifiersAlone])
 
   return (
     <div className="flex flex-col gap-1">

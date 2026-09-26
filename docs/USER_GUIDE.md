@@ -138,6 +138,16 @@ notes) and the transcription model. Models are downloaded once:
 
 Transcription runs on your PC: nothing is sent online.
 
+**English words in notes dictated in another language** (tower, approach,
+readback, the ICAO alphabet…): the transcription is told to expect them, in
+the language you dictate in. **Large v3 Turbo** gets them right much more
+often than Small (about four times slower; notes are transcribed one at a
+time in the background). Add your own words in **Words to recognise**:
+callsigns, fixes, SIDs, airports, or English words you mix in, separated by
+commas. Notes transcribed before a change can be transcribed again from the
+sessions list. A note without any sound (a button pressed by mistake) stays
+without text instead of getting a made-up sentence.
+
 **Muting yourself in Discord while you dictate.** Set your voice note key as
 **Push to Mute** in Discord (User Settings → Keybinds): holding it for a note
 also mutes you in the call. For notes dictated with the Companion's or the
@@ -233,6 +243,16 @@ and buttons to adjust a marker to the current position ("Start at / End at").
 During a recording the Companion also offers Marker, Range and Hold-to-dictate
 buttons (the PC's microphone records the note; see "Muting yourself in Discord"
 under Voice notes).
+
+**Push-to-talk from the tablet or phone.** In Setup → Companion →
+**Push-to-talk buttons**, set the key you talk with in your voice chat
+(Discord…) and in Aurora — Right Ctrl, AltGr and the other modifier keys work
+alone there. The Companion then shows a **Hold: Voice chat** and a **Hold:
+Aurora** button, at any time: while you hold one, TRS holds that key on the
+PC. The key is released when you let go, if the device disconnects, and after
+5 minutes at the latest. Like a real press, the key also reaches the window in
+front. In Discord, push-to-talk works only with Input mode set to **Push to
+Talk** (User Settings → Voice & Video).
 
 #### Tablet doesn't connect?
 

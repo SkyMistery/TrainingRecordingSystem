@@ -60,7 +60,7 @@ v1.2.1+); users accept the terms again only when TERMS_VERSION changes.
 - Typecheck + build after every change; format with Prettier.
 - tests/e2e/*.cjs drive the real app via CDP (see tests/e2e/README.md). Run
   the relevant one after changing behaviour. `review.cjs`, `sessions.cjs`,
-  `transcribe.cjs` and `mic.cjs` use an isolated `--user-data-dir` and their own
+  `transcribe.cjs`, `mic.cjs` and `ptt.cjs` use an isolated `--user-data-dir` and their own
   ports, so they don't disturb the trainer's running app. The app is single
   instance per user-data folder: an isolated instance runs beside the
   trainer's, one on the default folder only focuses it.
@@ -139,3 +139,9 @@ v1.2.1+); users accept the terms again only when TERMS_VERSION changes.
   app's shutdown (OBS restore) before calling it.
 - Atmosphere's `Dialog` always has a close button: a dialog that must not be
   dismissed uses the `AlertDialog*` primitives.
+- Simulated keys (`GlobalHotkeys.hold`): uiohook's `keyToggle` drops the
+  extended flag (AltGr reached Discord as Left Alt), so E0 keys go through
+  SendInput. Test scripts that hook the keyboard while the trainer may be
+  typing must record only their own test keys, never everything typed; and
+  never hold Right Ctrl or AltGr in tests (the trainer's Aurora and Discord
+  push-to-talk: it would transmit).

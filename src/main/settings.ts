@@ -77,9 +77,10 @@ const defaults = (): Settings => ({
     language: 'auto',
     transcribe: true,
     attachWindowSeconds: 60,
-    holdHotkeyFromButtons: false
+    holdHotkeyFromButtons: false,
+    vocabulary: ''
   },
-  companion: { enabled: true, lan: false, port: 17645 },
+  companion: { enabled: true, lan: false, port: 17645, pttKeys: { voiceChat: null, aurora: null } },
   companionToken: randomBytes(24).toString('hex'),
   obsPreviousWorkspace: null,
   statusWindowPosition: null,

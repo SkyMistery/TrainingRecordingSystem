@@ -180,6 +180,8 @@ export interface NoteSettings {
    * hotkey down, so a voice chat using it as push-to-mute (Discord) mutes the trainer.
    */
   holdHotkeyFromButtons: boolean
+  /** The trainer's own words for the transcription (callsigns, fixes, SIDs…), comma-separated. */
+  vocabulary: string
 }
 
 export interface ModelDownload {
@@ -314,11 +316,16 @@ export interface ReviewState {
   player: PlayerState
 }
 
+/** Push-to-talk keys the Companion can hold on the PC: the voice chat's (Discord…) and Aurora's. */
+export type PttTarget = 'voiceChat' | 'aurora'
+
 export interface CompanionSettings {
   enabled: boolean
   /** Reachable from other devices on the local network (tablet), not only this PC. */
   lan: boolean
   port: number
+  /** Keys held while the Companion's push-to-talk buttons are held; no button without a key. */
+  pttKeys: Record<PttTarget, Hotkey | null>
 }
 
 export interface CompanionInfo {
@@ -339,6 +346,8 @@ export interface CompanionState {
   review: ReviewState | null
   categories: MarkerCategory[]
   voiceNoteHotkey: string | null
+  /** Push-to-talk buttons to show, with the name of the key each one holds. */
+  pttKeys: { target: PttTarget; label: string }[]
 }
 
 /**
@@ -358,6 +367,9 @@ export interface SessionCommands {
   deleteNote: [folderName: string, markerId: string, noteId: string]
   retranscribeNote: [folderName: string, markerId: string, noteId: string]
   playerCommand: [command: PlayerCommand]
+  /** Companion push-to-talk buttons: hold and release the key set for the target. */
+  holdPtt: [target: PttTarget]
+  releasePtt: [target: PttTarget]
 }
 
 export type SessionCommandName = keyof SessionCommands

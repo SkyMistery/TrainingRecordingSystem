@@ -4,6 +4,7 @@ import {
   Circle,
   CircleAlert,
   Flag,
+  Headphones,
   Mic,
   Moon,
   MoveHorizontal,
@@ -11,10 +12,11 @@ import {
   Play,
   SkipBack,
   SkipForward,
-  Sun
+  Sun,
+  TowerControl
 } from 'lucide-react'
 import { byTime, currentMarker, livePosition } from '@shared/markers'
-import type { CompanionState, Marker, PlayerCommand, RecordingState, ReviewState } from '@shared/types'
+import type { CompanionState, Marker, PlayerCommand, PttTarget, RecordingState, ReviewState } from '@shared/types'
 import type { SendCommand } from '../commands'
 import {
   CategoryChips,
@@ -59,6 +61,51 @@ function useCompanionTheme(): [boolean, () => void] {
       return !value
     })
   return [night, toggle]
+}
+
+const PTT_BUTTONS: Record<PttTarget, { name: string; Icon: typeof Mic }> = {
+  voiceChat: { name: 'Voice chat', Icon: Headphones },
+  aurora: { name: 'Aurora', Icon: TowerControl }
+}
+
+/** Hold to talk: the PC holds the voice chat's or Aurora's push-to-talk key meanwhile. */
+function PttButtons({ keys, send }: { keys: CompanionState['pttKeys']; send: SendCommand }): React.JSX.Element | null {
+  const [held, setHeld] = useState<PttTarget[]>([])
+  if (keys.length === 0) return null
+  const release = (target: PttTarget): void => {
+    setHeld((current) => current.filter((item) => item !== target))
+    send('releasePtt', target)
+  }
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {keys.map(({ target, label }) => {
+        const { name, Icon } = PTT_BUTTONS[target]
+        const active = held.includes(target)
+        return (
+          <Button
+            key={target}
+            size="lg"
+            variant={active ? 'destructive' : 'outline'}
+            className="h-16 touch-none select-none"
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId)
+              setHeld((current) => [...current, target])
+              send('holdPtt', target)
+            }}
+            onPointerUp={() => release(target)}
+            onPointerCancel={() => release(target)}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <Icon className="size-5" aria-hidden />
+            <span className="flex flex-col items-start leading-tight">
+              {active ? `Talking: ${name}` : `Hold: ${name}`}
+              <span className="text-xs font-normal opacity-70">{label}</span>
+            </span>
+          </Button>
+        )
+      })}
+    </div>
+  )
 }
 
 const STATUS_TEXT: Record<ConnectionStatus, string> = {
@@ -369,6 +416,7 @@ export function CompanionApp(): React.JSX.Element {
       </header>
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 p-4">
         {error && <Alert variant="destructive" Icon={CircleAlert} title="Something went wrong" description={error} />}
+        {status !== 'unpaired' && state && <PttButtons keys={state.pttKeys} send={send} />}
         {status === 'unpaired' ? (
           <Alert
             Icon={CircleAlert}

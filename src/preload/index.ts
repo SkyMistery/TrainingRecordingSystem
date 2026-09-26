@@ -106,7 +106,8 @@ const api = {
   reportAudioStatus: (problem: string | null) => invoke<void>('audio:status', problem),
   reportAudioReady: () => invoke<void>('audio:ready'),
 
-  captureHotkey: () => invoke<Hotkey | null>('hotkeys:capture'),
+  /** `modifiersAlone`: Right Ctrl, AltGr… alone count as a key (push-to-talk keys). */
+  captureHotkey: (modifiersAlone = false) => invoke<Hotkey | null>('hotkeys:capture', modifiersAlone),
   cancelHotkeyCapture: () => invoke<void>('hotkeys:cancelCapture')
 }
 

@@ -37,7 +37,9 @@ const ALLOWED_COMMANDS = new Set<SessionCommandName>([
   'setNoteText',
   'deleteNote',
   'retranscribeNote',
-  'playerCommand'
+  'playerCommand',
+  'holdPtt',
+  'releasePtt'
 ])
 
 export function newCompanionToken(): string {
@@ -138,6 +140,8 @@ export class CompanionServer {
   private readonly alive = new WeakSet<WebSocket>()
   /** The device holding the push-to-talk button: its note ends if it goes away. */
   private noteOwner: WebSocket | null = null
+  /** The devices holding a push-to-talk key (Discord, Aurora): released if they go away. */
+  private readonly pttOwners = new Map<unknown, WebSocket>()
 
   constructor(
     private readonly hooks: CompanionHooks,
@@ -294,6 +298,11 @@ export class CompanionServer {
         this.noteOwner = null
         this.hooks.execute('stopNote', []).catch(() => undefined)
       }
+      for (const [target, owner] of [...this.pttOwners]) {
+        if (owner !== ws) continue
+        this.pttOwners.delete(target)
+        this.hooks.execute('releasePtt', [target]).catch(() => undefined)
+      }
       this.hooks.changed()
     })
     ws.on('message', (data) => {
@@ -309,6 +318,16 @@ export class CompanionServer {
         return
       }
       if (name === 'startNote') this.noteOwner = ws
+      if (name === 'holdPtt') this.pttOwners.set(args[0], ws)
+      if (name === 'releasePtt') {
+        // Like the note: another device's release must not cut this one off.
+        const owner = this.pttOwners.get(args[0])
+        if (owner && owner !== ws && owner.readyState === owner.OPEN) {
+          ws.send(JSON.stringify({ type: 'result', id }))
+          return
+        }
+        this.pttOwners.delete(args[0])
+      }
       if (name === 'stopNote') {
         // Another device releasing its button must not end this device's note.
         if (this.noteOwner && this.noteOwner !== ws && this.noteOwner.readyState === this.noteOwner.OPEN) {

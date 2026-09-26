@@ -1,8 +1,14 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Input, Label, Switch } from '@ivao/atmosphere-react'
 import { CircleAlert, ExternalLink, KeyRound, NotebookPen, QrCode, ShieldAlert } from 'lucide-react'
-import type { AppState, CompanionInfo, CompanionSettings } from '@shared/types'
+import type { AppState, CompanionInfo, CompanionSettings, Hotkey, PttTarget } from '@shared/types'
+import { HotkeyInput } from './HotkeyInput'
 import { SetupSection, type SectionProps } from './SetupSection'
+
+const PTT_ROWS: { target: PttTarget; label: string; hint: string }[] = [
+  { target: 'voiceChat', label: 'Voice chat', hint: 'Your push-to-talk key in Discord (or another voice chat).' },
+  { target: 'aurora', label: 'Aurora', hint: 'Your push-to-talk key in Aurora.' }
+]
 
 /**
  * QR code and link to pair a tablet or phone on the same network. While a
@@ -106,6 +112,33 @@ export function CompanionCard({
           </label>
 
           {settings.lan && <CompanionPairing info={info} concealed={state.review !== null} />}
+
+          <div className="flex flex-col gap-3">
+            <div>
+              <h3 className="text-base">Push-to-talk buttons</h3>
+              <p className="text-xs text-muted-foreground">
+                Optional. For each key set here the Companion shows a button: holding it holds the key on this PC, so
+                you can talk in the voice chat or on frequency from the tablet or phone. Right Ctrl, AltGr and the other
+                modifier keys work alone here. The key also reaches the window in front, as when you press it.
+              </p>
+            </div>
+            <ul className="flex flex-col gap-3">
+              {PTT_ROWS.map(({ target, label, hint }) => (
+                <li key={target} className="grid grid-cols-[12rem_1fr] items-start gap-4">
+                  <div>
+                    <div className="text-sm font-medium">{label}</div>
+                    <div className="text-xs text-muted-foreground">{hint}</div>
+                  </div>
+                  <HotkeyInput
+                    label={`${label} push-to-talk`}
+                    value={settings.pttKeys[target]}
+                    modifiersAlone
+                    onChange={(hotkey: Hotkey | null) => save({ pttKeys: { ...settings.pttKeys, [target]: hotkey } })}
+                  />
+                </li>
+              ))}
+            </ul>
+          </div>
 
           <div className="flex flex-wrap items-end gap-4">
             <div className="flex flex-col gap-1.5">

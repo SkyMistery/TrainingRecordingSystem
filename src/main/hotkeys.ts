@@ -3,7 +3,7 @@ import koffi from 'koffi'
 import { uIOhook, UiohookKey, type UiohookKeyboardEvent, type UiohookMouseEvent } from 'uiohook-napi'
 import type { Hotkey } from '../shared/types'
 
-// SendInput for mouse buttons (uiohook only simulates keys).
+// SendInput for mouse buttons and extended keys (uiohook simulates the other keys).
 const MOUSEINPUT = koffi.struct('MOUSEINPUT', {
   dx: 'long',
   dy: 'long',
@@ -12,10 +12,25 @@ const MOUSEINPUT = koffi.struct('MOUSEINPUT', {
   time: 'uint32_t',
   dwExtraInfo: 'uintptr_t'
 })
-// The union's largest member is MOUSEINPUT, so this has the size of INPUT.
-const INPUT = koffi.struct('INPUT', { type: 'uint32_t', mi: MOUSEINPUT })
-const SendInput = koffi.load('user32.dll').func('uint32_t __stdcall SendInput(uint32_t count, INPUT *inputs, int size)')
+const KEYBDINPUT = koffi.struct('KEYBDINPUT', {
+  wVk: 'uint16_t',
+  wScan: 'uint16_t',
+  dwFlags: 'uint32_t',
+  time: 'uint32_t',
+  dwExtraInfo: 'uintptr_t'
+})
+const INPUT = koffi.struct('INPUT', {
+  type: 'uint32_t',
+  u: koffi.union('INPUT_UNION', { mi: MOUSEINPUT, ki: KEYBDINPUT })
+})
+const user32 = koffi.load('user32.dll')
+const SendInput = user32.func('uint32_t __stdcall SendInput(uint32_t count, INPUT *inputs, int size)')
+const MapVirtualKeyW = user32.func('uint32_t __stdcall MapVirtualKeyW(uint32_t code, uint32_t mapType)')
 const INPUT_MOUSE = 0
+const INPUT_KEYBOARD = 1
+const KEYEVENTF_EXTENDEDKEY = 0x1
+const KEYEVENTF_KEYUP = 0x2
+const MAPVK_VSC_TO_VK_EX = 3
 const MOUSEEVENTF_MIDDLEDOWN = 0x20
 const MOUSEEVENTF_MIDDLEUP = 0x40
 const MOUSEEVENTF_XDOWN = 0x80
@@ -31,7 +46,30 @@ function sendMouseButton(button: number, down: boolean): void {
       ? MOUSEEVENTF_XDOWN
       : MOUSEEVENTF_XUP
   const mi = { dx: 0, dy: 0, mouseData: middle ? 0 : button - 3, dwFlags: flags, time: 0, dwExtraInfo: 0 }
-  if (SendInput(1, [{ type: INPUT_MOUSE, mi }], koffi.sizeof(INPUT)) !== 1) throw new Error('SendInput failed')
+  if (SendInput(1, [{ type: INPUT_MOUSE, u: { mi } }], koffi.sizeof(INPUT)) !== 1) throw new Error('SendInput failed')
+}
+
+/**
+ * Presses or releases a key. Keys with an E0 scan code prefix (AltGr, Right
+ * Ctrl, arrows…; uiohook codes 0x0Exx or 0xE0xx) go through SendInput with the
+ * extended flag: uiohook drops it, so AltGr would reach apps like Discord as Left Alt.
+ */
+function sendKey(code: number, down: boolean): void {
+  const prefix = code >> 8
+  if (prefix !== 0x0e && prefix !== 0xe0) {
+    uIOhook.keyToggle(code, down ? 'down' : 'up')
+    return
+  }
+  const scan = code & 0xff
+  const ki = {
+    wVk: MapVirtualKeyW(0xe000 | scan, MAPVK_VSC_TO_VK_EX),
+    wScan: scan,
+    dwFlags: KEYEVENTF_EXTENDEDKEY | (down ? 0 : KEYEVENTF_KEYUP),
+    time: 0,
+    dwExtraInfo: 0
+  }
+  if (SendInput(1, [{ type: INPUT_KEYBOARD, u: { ki } }], koffi.sizeof(INPUT)) !== 1)
+    throw new Error('SendInput failed')
 }
 
 /** Simulated presses come back through the hook: they are ignored if they arrive within this time. */
@@ -48,6 +86,16 @@ const MODIFIER_KEYS = new Set<number>([
   UiohookKey.ShiftRight,
   UiohookKey.Meta,
   UiohookKey.MetaRight
+])
+
+/** Names of modifier keys bound alone (push-to-talk keys such as Right Ctrl or AltGr). */
+const MODIFIER_NAMES = new Map<number, string>([
+  [UiohookKey.Ctrl, 'Left Ctrl'],
+  [UiohookKey.CtrlRight, 'Right Ctrl'],
+  [UiohookKey.Alt, 'Left Alt'],
+  [UiohookKey.AltRight, 'AltGr (Right Alt)'],
+  [UiohookKey.Shift, 'Left Shift'],
+  [UiohookKey.ShiftRight, 'Right Shift']
 ])
 
 /** Left and right click stay free: only middle and side buttons can be bound. */
@@ -88,6 +136,10 @@ export class GlobalHotkeys extends EventEmitter<HotkeyEvents> {
   private readonly synthetic = new Map<string, number[]>()
   /** Releases of the hotkeys held by hold(). */
   private readonly holds = new Set<() => void>()
+  /** The current capture accepts a modifier key alone (Right Ctrl, AltGr…). */
+  private captureModifiers = false
+  /** Modifier pressed during such a capture: it is the key if released before any other key. */
+  private modifierCandidate: number | null = null
 
   start(): void {
     if (this.started) return
@@ -117,9 +169,11 @@ export class GlobalHotkeys extends EventEmitter<HotkeyEvents> {
     if (hotkey.ctrl) modifiers.push(UiohookKey.Ctrl)
     if (hotkey.alt) modifiers.push(UiohookKey.Alt)
     if (hotkey.shift) modifiers.push(UiohookKey.Shift)
+    // Modifier keys never reach onDown/onUp's hotkey handling, so nothing comes back to ignore.
+    const echoes = hotkey.device === 'mouse' || !MODIFIER_KEYS.has(hotkey.code)
     const press = (down: boolean): void => {
-      this.expect(`${down ? 'down' : 'up'}:${hotkey.device}:${hotkey.code}`)
-      if (hotkey.device === 'keyboard') uIOhook.keyToggle(hotkey.code, down ? 'down' : 'up')
+      if (echoes) this.expect(`${down ? 'down' : 'up'}:${hotkey.device}:${hotkey.code}`)
+      if (hotkey.device === 'keyboard') sendKey(hotkey.code, down)
       else sendMouseButton(hotkey.code, down)
     }
     const releaseModifiers = (): void => {
@@ -159,12 +213,20 @@ export class GlobalHotkeys extends EventEmitter<HotkeyEvents> {
     return found
   }
 
-  /** Resolves with the next key or mouse button pressed; Escape cancels (null). */
-  captureNext(): Promise<Hotkey | null> {
+  /**
+   * Resolves with the next key or mouse button pressed; Escape cancels (null).
+   * `modifiersAlone`: a modifier pressed and released alone is the key (for
+   * push-to-talk keys such as Right Ctrl or AltGr; the Windows key never is).
+   */
+  captureNext(modifiersAlone = false): Promise<Hotkey | null> {
     this.capture?.(null)
+    this.captureModifiers = modifiersAlone
+    this.modifierCandidate = null
     return new Promise((resolve) => {
       this.capture = (hotkey) => {
         this.capture = null
+        this.captureModifiers = false
+        this.modifierCandidate = null
         resolve(hotkey)
       }
     })
@@ -175,7 +237,11 @@ export class GlobalHotkeys extends EventEmitter<HotkeyEvents> {
   }
 
   private onDown(device: Hotkey['device'], code: number, e: InputEvent): void {
-    if (device === 'keyboard' && MODIFIER_KEYS.has(code)) return
+    if (device === 'keyboard' && MODIFIER_KEYS.has(code)) {
+      // AltGr arrives as Left Ctrl then Right Alt: the last one pressed wins.
+      if (this.capture && this.captureModifiers && MODIFIER_NAMES.has(code)) this.modifierCandidate = code
+      return
+    }
     if (device === 'mouse' && code < MIN_MOUSE_BUTTON) return
     const id = `${device}:${code}`
     if (this.isSynthetic(`down:${id}`)) return
@@ -194,6 +260,11 @@ export class GlobalHotkeys extends EventEmitter<HotkeyEvents> {
   }
 
   private onUp(device: Hotkey['device'], code: number): void {
+    if (device === 'keyboard' && this.capture && this.modifierCandidate !== null && MODIFIER_KEYS.has(code)) {
+      const key = this.modifierCandidate
+      this.capture({ device, code: key, ctrl: false, alt: false, shift: false, label: MODIFIER_NAMES.get(key)! })
+      return
+    }
     const id = `${device}:${code}`
     if (this.isSynthetic(`up:${id}`)) return
     if (!this.held.has(id)) return
