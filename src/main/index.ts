@@ -74,6 +74,8 @@ function createMainWindow(): void {
     }
   })
 
+  // Hidden from screen capture (OBS, Discord) unless a review is open: see Controller.
+  mainWindow.setContentProtection(!(controller?.isShareable() ?? false))
   mainWindow.once('ready-to-show', () => mainWindow?.show())
 
   // Closing the window while recording goes through the quit confirmation.
@@ -150,11 +152,11 @@ app.whenReady().then(async () => {
   applyThemePreference(getSettings().theme)
   handleMediaScheme()
   registerIpc()
-  // Transcripts shown while recording must not end up in the recording itself
-  // (single monitor, or the window left on the recorded one): hide the window
-  // from screen capture only then, since the review is meant to be shared.
-  controller = new Controller((recording) => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setContentProtection(recording)
+  // Only the review is meant to be shared (Discord): the recording page shows
+  // transcripts (they would end up in the recording itself on the recorded
+  // monitor), the sessions list other trainees, Setup the pairing QR code.
+  controller = new Controller((shareable) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setContentProtection(!shareable)
   })
   try {
     await controller.init()

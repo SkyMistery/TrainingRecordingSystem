@@ -1,6 +1,7 @@
 import { Button, Slider, Switch } from '@ivao/atmosphere-react'
 import { AppWindow, Mic, MicOff, Speaker, Trash2, Volume2, VolumeX } from 'lucide-react'
-import type { AudioLevels, AudioSourceConfig, AudioSourceKind } from '@shared/types'
+import type { AudioSourceConfig, AudioSourceKind } from '@shared/types'
+import { useAudioLevels } from '../hooks'
 
 const KIND_ICON: Record<AudioSourceKind, typeof Mic> = {
   application: AppWindow,
@@ -30,7 +31,6 @@ function LevelMeter({ db, muted }: { db: number; muted: boolean }): React.JSX.El
 
 interface AudioMixerProps {
   sources: AudioSourceConfig[]
-  levels: AudioLevels
   onMutedChange: (id: string, muted: boolean) => void
   onVolumeChange?: (id: string, volumeDb: number) => void
   onVolumeCommit?: (id: string, volumeDb: number) => void
@@ -38,7 +38,9 @@ interface AudioMixerProps {
   onRemove?: (id: string) => void
 }
 
+/** Levels arrive 20 times a second: they re-render the mixer only, not the page around it. */
 export function AudioMixer(props: AudioMixerProps): React.JSX.Element {
+  const levels = useAudioLevels()
   if (props.sources.length === 0) {
     return <p className="text-sm text-muted-foreground">No audio sources yet.</p>
   }
@@ -73,7 +75,7 @@ export function AudioMixer(props: AudioMixerProps): React.JSX.Element {
                 </Button>
               )}
             </div>
-            <LevelMeter db={props.levels[source.id] ?? MIN_DB} muted={source.muted} />
+            <LevelMeter db={levels[source.id] ?? MIN_DB} muted={source.muted} />
             {props.onVolumeChange && (
               <div className="flex items-center gap-3">
                 <Slider

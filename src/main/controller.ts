@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, rm, unlink, writeFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron'
 import type {
   AppState,
   CompanionSettings,
@@ -15,6 +15,7 @@ import type {
   AudioLevels,
   AudioSourceKind,
   CaptureConfig,
+  DisplayOption,
   EncoderId,
   Hotkey,
   Marker,
@@ -62,6 +63,8 @@ interface ActiveSession {
   openRangeId: string | null
   /** Marker numbers are never reused, so a screenshot can't overwrite another's file. */
   nextMarkerNumber: number
+  /** Problems met during this recording, shown until it ends. */
+  warnings: string[]
 }
 
 /** A voice note being dictated (push-to-talk held). */
@@ -93,6 +96,10 @@ const MAX_DICTATION_MS = 3 * 60_000
 /** After OBS drops the connection during a recording, try to get it back for a minute. */
 const RECONNECT_DELAY_MS = 5_000
 const RECONNECT_ATTEMPTS = 12
+/** Monitors changed (rearranged, plugged, resolution): read the recorded one again once they settle. */
+const DISPLAY_CHANGE_DELAY_MS = 1_500
+/** The latest warnings of a recording are kept; older ones are dropped. */
+const MAX_WARNINGS = 5
 
 /**
  * Owns the application state. Windows (and later the Companion page) are views:
@@ -109,9 +116,20 @@ export class Controller {
   /** Set while a session is being ended (see endSession). */
   private ending: Promise<void> | null = null
   private reconnectTimer: NodeJS.Timeout | null = null
+  private displayTimer: NodeJS.Timeout | null = null
+  /** Whether the main window may be captured (shared on Discord): only while a review is open. */
+  private shareable = false
   private state: AppState
+  /** A finished session whose last save failed: kept until "Save again" works. */
+  private unsaved: { folder: string; session: SessionFile } | null = null
+  /** Voice notes released and still being saved (the session end waits for them). */
+  private readonly savingNotes = new Set<Promise<void>>()
   private readonly store = new SessionStore((folder) =>
-    this.active?.folder === folder ? this.active.session : undefined
+    this.active?.folder === folder
+      ? this.active.session
+      : this.unsaved?.folder === folder
+        ? this.unsaved.session
+        : undefined
   )
   private readonly transcriber: Transcriber
   private readonly audio = new AudioCapture((problem) => {
@@ -186,8 +204,12 @@ export class Controller {
     releasePtt: async (target) => this.releasePtt(target)
   }
 
-  /** `onRecordingChanged` lets the main window hide itself from screen capture while recording. */
-  constructor(private readonly onRecordingChanged: (recording: boolean) => void = () => undefined) {
+  /**
+   * `onShareableChanged`: the main window hides itself from screen capture
+   * (OBS, Discord) except while a review is open, the one page meant to be
+   * shared: the sessions list shows other trainees, a recording the notes.
+   */
+  constructor(private readonly onShareableChanged: (shareable: boolean) => void) {
     const settings = getSettings()
     this.transcriber = new Transcriber(this.store, {
       noteChanged: (folder) => void this.sessionChanged(folder),
@@ -201,12 +223,14 @@ export class Controller {
       companionSettings: settings.companion,
       sessionsDir: settings.sessionsDir,
       hiddenWindowsError: null,
+      hiddenWindowsFound: [],
       microphoneError: null,
       noteSettings: settings.notes,
       transcription: this.transcriptionState(),
       review: null,
       companion: { running: false, error: null, urls: [], qr: null, clients: 0, publicNetwork: false },
       update: null,
+      notice: null,
       termsAcceptedVersion: settings.termsAccepted?.version ?? null,
       busy: false
     }
@@ -219,15 +243,35 @@ export class Controller {
         onDisconnected: (reason, durationMs) => {
           this.patch({ obs: { status: 'error', error: reason, version: null } })
           if (!this.active) return
-          this.endSession(async () => ({ outputPath: null, durationMs })).catch((error: unknown) =>
+          this.patch({
+            notice: {
+              kind: 'warning',
+              title: 'Connection to OBS lost during the recording',
+              message:
+                'Reconnecting… If OBS is still recording, the session continues (markers made meanwhile are missing).'
+            }
+          })
+          // Not stopped: OBS may still be recording, and the session goes on once it is back.
+          this.endSession(async () => ({ outputPath: null, durationMs, stopped: false })).catch((error: unknown) =>
             console.error(error)
           )
-          // OBS may still be recording (only the connection dropped): reconnect and pick the session up again.
           this.scheduleReconnect(1)
         },
         onLevels: (levels) => this.broadcast('audio:levels', levels),
         onRecordingStopped: (outputPath, durationMs) =>
-          this.endSession(async () => ({ outputPath, durationMs })).catch((error: unknown) => console.error(error))
+          this.endSession(async () => ({ outputPath, durationMs, stopped: true })).then(
+            () =>
+              this.patch({
+                notice: {
+                  kind: 'warning',
+                  title: 'OBS stopped the recording',
+                  message:
+                    'The session was saved. If you didn’t stop it in OBS, check OBS: the disk may be full or the encoder may have failed.'
+                }
+              }),
+            (error: unknown) => console.error(error)
+          ),
+        onWarning: (message) => this.warn(message)
       },
       {
         get: () => getSettings().obsPreviousWorkspace,
@@ -238,7 +282,12 @@ export class Controller {
     this.windowMasks = new WindowMasks(
       this.recorder,
       () => this.state.capture,
-      (hiddenWindowsError) => this.patch({ hiddenWindowsError })
+      (hiddenWindowsError) => {
+        // During a recording the trainer must know at once: private windows may be in the video.
+        if (hiddenWindowsError && this.active) this.feedback('error')
+        this.patch({ hiddenWindowsError })
+      },
+      (hiddenWindowsFound) => this.patch({ hiddenWindowsFound })
     )
   }
 
@@ -255,6 +304,10 @@ export class Controller {
     } catch (error) {
       console.error('Global hotkeys unavailable', error)
     }
+    // A monitor rearranged, plugged in or resized moves the recorded one: the masks follow its position.
+    screen.on('display-added', () => this.scheduleDisplayRefresh())
+    screen.on('display-removed', () => this.scheduleDisplayRefresh())
+    screen.on('display-metrics-changed', () => this.scheduleDisplayRefresh())
     // Connect silently at startup; the Setup page shows the outcome.
     void this.connectObs().catch(() => undefined)
     void this.resumeTranscriptions()
@@ -267,6 +320,11 @@ export class Controller {
     return this.active !== null
   }
 
+  /** See the constructor: the main window is capturable only while a review is open. */
+  isShareable(): boolean {
+    return this.shareable
+  }
+
   setUpdate(update: UpdateState | null): void {
     this.patch({ update })
   }
@@ -274,6 +332,7 @@ export class Controller {
   /** Each step runs even if an earlier one fails, so OBS still gets the trainer's profile back. */
   async shutdown(): Promise<void> {
     this.cancelReconnect()
+    if (this.displayTimer) clearTimeout(this.displayTimer)
     this.hotkeys.stop()
     await this.stopSession().catch((error: unknown) => console.error('Could not stop the recording', error))
     this.audio.destroy()
@@ -281,6 +340,8 @@ export class Controller {
     await this.companion.stop().catch((error: unknown) => console.error('Could not stop the Companion', error))
     this.windowMasks.stop()
     await this.recorder.disconnect().catch((error: unknown) => console.error('Could not restore OBS', error))
+    // A session whose last save failed gets one more try.
+    await this.saveUnsaved().catch((error: unknown) => console.error('Session still not saved', error))
   }
 
   // ---------------------------------------------------------------------------
@@ -363,6 +424,8 @@ export class Controller {
       this.patch({ termsAcceptedVersion: version })
     })
     handle('session:stop', () => this.stopSession())
+    handle('notice:dismiss', () => this.patch({ notice: null }))
+    handle('notice:retry', () => this.saveUnsaved())
 
     handle('command', (name: SessionCommandName, args: unknown[]) => this.execute(name, args))
     handle('markers:saveSettings', async (patch: Partial<MarkerSettings>) => {
@@ -431,11 +494,33 @@ export class Controller {
 
   private scheduleReconnect(attempt: number): void {
     this.cancelReconnect()
-    if (attempt > RECONNECT_ATTEMPTS) return
+    if (attempt > RECONNECT_ATTEMPTS) {
+      this.patch({
+        notice: {
+          kind: 'error',
+          title: 'Could not reconnect to OBS',
+          message:
+            'The session is saved up to the lost connection. If OBS went on recording, stop it in OBS: its file is added to the session when you open it.'
+        }
+      })
+      return
+    }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       if (this.recorder.isConnected() || this.state.obs.status === 'connecting') return
-      this.connectObs().catch(() => this.scheduleReconnect(attempt + 1))
+      this.connectObs().then(
+        () =>
+          this.patch({
+            notice: this.active
+              ? { kind: 'info', title: 'Connection to OBS is back', message: 'The recording continues.' }
+              : {
+                  kind: 'warning',
+                  title: 'Reconnected to OBS',
+                  message: 'OBS was no longer recording: the session is saved up to the lost connection.'
+                }
+          }),
+        () => this.scheduleReconnect(attempt + 1)
+      )
     }, RECONNECT_DELAY_MS)
   }
 
@@ -456,12 +541,47 @@ export class Controller {
       throw new Error(describeObsError(error))
     }
     await this.reattachRecording().catch((error: unknown) => console.error('Could not resume the recording', error))
+    // The monitors may have been rearranged since the app last talked to OBS.
+    await this.refreshDisplay().catch((error: unknown) =>
+      console.warn('Recorded monitor not checked:', error instanceof Error ? error.message : error)
+    )
     // Applied again before every recording, so a failure here isn't fatal.
     if (this.state.capture.display && !this.active) {
       await this.withBusy(() => this.recorder.configure(this.state.capture)).catch((error: unknown) =>
         console.warn('Capture settings not applied yet:', error instanceof Error ? error.message : error)
       )
     }
+    // A recording started in OBS itself must not land in an old session's folder.
+    if (!this.active) await this.recorder.resetOutputDir(getSettings().sessionsDir).catch(() => undefined)
+  }
+
+  private scheduleDisplayRefresh(): void {
+    if (this.displayTimer) clearTimeout(this.displayTimer)
+    this.displayTimer = setTimeout(() => {
+      this.displayTimer = null
+      this.refreshDisplay().catch((error: unknown) =>
+        console.warn('Recorded monitor not checked:', error instanceof Error ? error.message : error)
+      )
+    }, DISPLAY_CHANGE_DELAY_MS)
+  }
+
+  /**
+   * Reads the recorded monitor from OBS again: its name carries its position
+   * ("@ x,y"), which the masks need, and changes when monitors are rearranged
+   * even if the monitor and its resolution stay the same.
+   */
+  private async refreshDisplay(): Promise<void> {
+    const current = this.state.capture.display
+    if (!current || !this.recorder.isConnected()) return
+    const display = (await this.recorder.listDisplays()).find((item) => item.id === current.id)
+    if (!display) return // unplugged: Start says so
+    // While recording OBS keeps the size it started with; the position is what the masks follow.
+    const next = this.active ? { ...current, name: display.name } : display
+    if (sameDisplay(next, current)) return
+    console.info(`Recorded monitor is now “${next.name}” (was “${current.name}”)`)
+    const capture = { ...this.state.capture, display: next }
+    this.patch({ capture })
+    await updateSettings({ capture })
   }
 
   // --- Sessions ------------------------------------------------------------------
@@ -476,15 +596,17 @@ export class Controller {
     if (!capture.display) throw new Error('Choose the display to record in Setup first')
 
     await this.withBusy(async () => {
-      // The monitor may have been unplugged or changed resolution since Setup.
+      // The monitor may have been unplugged, resized or moved (its position, for the masks) since Setup.
       const display = (await recorder.listDisplays()).find((item) => item.id === capture.display!.id)
       if (!display) throw new Error('The monitor chosen in Setup is not connected: choose it again in Setup')
-      if (display.width !== capture.display!.width || display.height !== capture.display!.height) {
+      if (!sameDisplay(display, capture.display!)) {
         capture = { ...capture, display }
         this.patch({ capture })
         await updateSettings({ capture })
       }
       await recorder.configure(capture)
+      // Private windows covered before the first frame. A problem is shown (and heard) but doesn't stop the session.
+      await this.windowMasks.refreshNow().catch(() => undefined)
       const { folder, session } = await createSession(getSettings().sessionsDir, metadata)
       session.consent = { statement: RECORDING_CONSENT, confirmedAt: new Date().toISOString() }
       try {
@@ -509,8 +631,15 @@ export class Controller {
   /** Makes a session the one being recorded (a new one, or one picked up again after a lost connection). */
   private async activate(folder: string, session: SessionFile): Promise<void> {
     const lastNumber = Math.max(0, ...session.markers.map((marker) => marker.number))
-    this.active = { folder, session, openRangeId: null, nextMarkerNumber: lastNumber + 1 }
-    this.onRecordingChanged(true)
+    // A range left open when the connection dropped is still open.
+    const openRange = session.markers.findLast((marker) => marker.kind === 'range' && marker.endMs === null)
+    this.active = {
+      folder,
+      session,
+      openRangeId: openRange?.id ?? null,
+      nextMarkerNumber: lastNumber + 1,
+      warnings: []
+    }
     await this.persist()
     // Kept open for the whole session so push-to-talk starts instantly.
     const { micDeviceId, micLabel } = getSettings().notes
@@ -526,16 +655,25 @@ export class Controller {
    * recording one of the sessions: continue it instead of leaving it orphaned.
    */
   private async reattachRecording(): Promise<void> {
-    if (this.active || this.ending) return
+    // The session is still being closed after the connection dropped: continue it once that is done.
+    if (this.ending) await this.ending.catch(() => undefined)
+    if (this.active) return
     const running = await this.recorder.recordingInProgress()
     if (!running) return
     const folder = sessionFilePath([basename(running.outputDir)])
     if (!folder || folder.toLowerCase() !== resolve(running.outputDir).toLowerCase()) return
-    const session = await loadSession(folder).catch(() => null)
-    if (!session?.recording) return
+    const session = await this.store.read(folder).catch(() => null)
+    const recording = session?.recording
+    // Only a recording that never stopped. OBS recording into a finished session's
+    // folder (started from OBS) is something else, and must not replace its video.
+    if (!session || !recording || recording.endedAt || recording.file !== null) return
     console.info(`Continuing the recording of ${basename(folder)}`)
     this.recorder.continueRecording(running.durationMs)
     await this.activate(folder, session)
+    // A dictation cut off by the lost connection may have left a microphone muted in OBS.
+    for (const source of this.state.capture.audioSources) {
+      await this.recorder.setMuted(source.id, source.muted).catch(() => undefined)
+    }
   }
 
   /**
@@ -545,10 +683,10 @@ export class Controller {
    */
   private async recoverRecording(folder: string): Promise<void> {
     if (this.active?.folder === folder) return
-    const session = await loadSession(folder)
+    const session = await this.store.read(folder)
     const recording = session.recording
-    if (!recording || recording.file === RECORDING_FILE) return
-    const found = await findRecordingFile(folder, recording.file)
+    if (!recording || recording.file !== null) return
+    const found = await findRecordingFile(folder)
     if (!found) return
     const file = await adoptRecording(folder, found)
     await this.store.update(folder, (current) => {
@@ -562,11 +700,11 @@ export class Controller {
     return this.endSession(async () => {
       const durationMs = this.recorder.currentTimeMs()
       try {
-        return { outputPath: await this.recorder.stop(), durationMs }
+        return { outputPath: await this.recorder.stop(), durationMs, stopped: true }
       } catch (error) {
         // Still finalise: the session must not stay open with OBS in an unknown state.
         console.error('OBS did not stop the recording cleanly', error)
-        return { outputPath: null, durationMs }
+        return { outputPath: null, durationMs, stopped: false }
       }
     })
   }
@@ -577,55 +715,97 @@ export class Controller {
    * the first. Markers, notes and hotkeys are refused from the start, so none
    * land in a session that is being closed.
    */
-  private endSession(stop: () => Promise<{ outputPath: string | null; durationMs?: number }>): Promise<void> {
+  /**
+   * `stopped`: OBS confirmed the recording stopped. After a lost connection it
+   * may still be recording: the session then stays open to be continued.
+   */
+  private endSession(
+    stop: () => Promise<{ outputPath: string | null; durationMs?: number; stopped: boolean }>
+  ): Promise<void> {
     if (this.ending) return this.ending
     const active = this.active
     if (!active) return Promise.resolve()
     this.ending = this.withBusy(async () => {
       try {
-        const { outputPath, durationMs } = await stop()
-        await this.finaliseSession(active, outputPath, durationMs)
+        const { outputPath, durationMs, stopped } = await stop()
+        await this.finaliseSession(active, outputPath, durationMs, stopped)
       } finally {
         this.active = null
         this.ending = null
-        this.onRecordingChanged(false)
         this.patch({ recording: null })
         this.broadcast('sessions:changed', null)
+        // Stopped from OBS itself: OBS's own folder still points into this session.
+        void this.recorder.resetOutputDir(getSettings().sessionsDir).catch(() => undefined)
       }
     })
     return this.ending
   }
 
   /** Stores the recording in the session folder and saves the session a last time. */
-  private async finaliseSession(active: ActiveSession, outputPath: string | null, durationMs?: number): Promise<void> {
+  private async finaliseSession(
+    active: ActiveSession,
+    outputPath: string | null,
+    durationMs: number | undefined,
+    stopped: boolean
+  ): Promise<void> {
     if (this.dictation) await this.stopNote().catch(() => undefined)
+    // A note released just before the end is still being saved: its audio must not be cut off.
+    await Promise.all([...this.savingNotes]).catch(() => undefined)
     this.audio.close()
     hideStatusWindow()
     const recording = active.session.recording
     if (recording) {
       recording.durationMs = Math.round(durationMs ?? Date.now() - Date.parse(recording.startedAt))
-      // Without a path from OBS (crash, lost connection) the file is looked for in the folder.
-      const file = outputPath ?? (await findRecordingFile(active.folder, null))
-      if (file) {
-        try {
-          recording.file = await adoptRecording(active.folder, file)
-        } catch (error) {
-          // Still busy (e.g. OBS still writing it): recovered when the session is opened.
-          console.error('Could not move the recording into the session folder', error)
+      if (stopped) {
+        recording.endedAt = new Date().toISOString()
+        // Without a path from OBS (it failed) the file is looked for in the folder.
+        const file = outputPath ?? (await findRecordingFile(active.folder))
+        if (file) {
+          try {
+            recording.file = await adoptRecording(active.folder, file)
+          } catch (error) {
+            // Still busy: recovered when the session is opened.
+            console.error('Could not move the recording into the session folder', error)
+          }
         }
       }
-      // A range still open when recording stops ends with the recording.
+      // Not stopped (connection lost): OBS may still be writing the file. The
+      // session is continued if it is, or its file is picked up later.
+      // A range still open when recording stops ends with the recording (kept open if it may continue).
       const open = active.session.markers.find((marker) => marker.id === active.openRangeId)
-      if (open) open.endMs = Math.max(open.timeMs, recording.durationMs)
+      if (open && stopped) open.endMs = Math.max(open.timeMs, recording.durationMs)
     }
+    // Kept in memory until it is saved: "Save again" (in the notice) retries.
+    this.unsaved = { folder: active.folder, session: active.session }
     try {
       await this.store.update(active.folder, () => undefined)
+      this.unsaved = null
     } catch (error) {
       console.error('Could not save the session', error)
-      throw new Error(
-        'The recording stopped, but the session file could not be saved. Close any program using the session folder and restart the app.'
-      )
+      this.patch({
+        notice: {
+          kind: 'error',
+          title: 'The session file could not be saved',
+          message: `The recording stopped, but the markers and notes of ${basename(active.folder)} are not saved yet: ${describeFileError(error)}. Close any program using the session folder, then save again. Don’t close the app before.`,
+          retry: 'saveSession'
+        }
+      })
+      throw new Error('The recording stopped, but the session file could not be saved.')
     }
+  }
+
+  /** "Save again" in the notice after the final save failed. */
+  private async saveUnsaved(): Promise<void> {
+    const unsaved = this.unsaved
+    if (!unsaved) return
+    try {
+      await this.store.update(unsaved.folder, () => undefined)
+    } catch (error) {
+      throw new Error(`Still not saved: ${describeFileError(error)}.`)
+    }
+    this.unsaved = null
+    this.patch({ notice: null })
+    this.broadcast('sessions:changed', null)
   }
 
   /** New sessions go to the chosen folder; existing ones stay where they are (move them by hand). */
@@ -735,24 +915,36 @@ export class Controller {
     if (!active) return
     this.patch({
       recording: {
-        sessionId: active.session.id,
         metadata: active.session.metadata,
         elapsedMs: this.recorder.currentTimeMs(),
         sampledAt: Date.now(),
         folderName: basename(active.folder),
         markers: active.session.markers.map((marker) => ({ ...marker })),
         openRangeId: active.openRangeId,
-        dictatingMarkerId: this.dictation?.markerId ?? null
+        dictatingMarkerId: this.dictation?.markerId ?? null,
+        warnings: [...active.warnings]
       }
     })
   }
 
+  /** Shows a problem of the recording in progress (app, status window, Companion) with the error tone. */
+  private warn(message: string): void {
+    console.warn('Recording:', message)
+    const active = this.active
+    if (!active) return
+    active.warnings = [...active.warnings.filter((item) => item !== message), message].slice(-MAX_WARNINGS)
+    this.feedback('error')
+    this.publishRecording()
+  }
+
+  /** Saves the session being recorded; everything stays in memory if it fails, and the next save retries. */
   private async persist(): Promise<void> {
     const active = this.active
     if (!active) return
-    await this.store
-      .update(active.folder, () => undefined)
-      .catch((error: unknown) => console.error('Could not save the session', error))
+    await this.store.update(active.folder, () => undefined).catch((error: unknown) => {
+      console.error('Could not save the session', error)
+      this.warn(`The session file could not be saved (${describeFileError(error)}): the next change tries again.`)
+    })
   }
 
   // --- Markers -------------------------------------------------------------------
@@ -1085,7 +1277,7 @@ export class Controller {
     if (this.active?.folder === folder) this.publishRecording()
     const review = this.state.review
     if (review && sessionFilePath([review.folderName]) === folder) {
-      const current = session ?? (await this.store.update(folder, () => undefined))
+      const current = session ?? (await this.store.read(folder))
       this.patch({ review: { ...review, markers: structuredClone(current.markers) } })
     }
     this.broadcast('sessions:changed', null)
@@ -1095,18 +1287,20 @@ export class Controller {
     const folder = this.sessionFolder(folderName)
     if (this.active?.folder === folder) throw new Error('This session is still being recorded')
     await this.recoverRecording(folder).catch((error: unknown) => console.error('Recording not recovered', error))
-    const session = await this.store.update(folder, () => undefined)
+    // Read only: a session on a read-only drive can still be reviewed.
+    const session = await this.store.read(folder)
     this.patch({
       review: {
         folderName,
         metadata: session.metadata,
         durationMs: session.recording?.durationMs ?? 0,
         hasRecording: Boolean(session.recording?.file),
+        recordingFile: session.recording?.file ?? null,
         markers: structuredClone(session.markers),
         player: { positionMs: 0, playing: false, rate: 1, sampledAt: Date.now() }
       }
     })
-    await this.transcriber.resume(folder, session)
+    await this.transcriber.resume(folder, session).catch((error: unknown) => console.error(error))
   }
 
   /** The review player lives in the main window; other views steer it through here. */
@@ -1120,6 +1314,7 @@ export class Controller {
     return {
       recording: this.state.recording,
       review: this.state.review,
+      hiddenWindowsError: this.state.hiddenWindowsError,
       categories: this.state.markerSettings.categories,
       voiceNoteHotkey: this.state.markerSettings.hotkeys.voiceNote?.label ?? null,
       pttKeys: PTT_TARGETS.flatMap((target) => {
@@ -1222,6 +1417,11 @@ export class Controller {
 
   private patch(partial: Partial<AppState>): void {
     this.state = { ...this.state, ...partial }
+    const shareable = this.state.review !== null && this.state.recording === null
+    if (shareable !== this.shareable) {
+      this.shareable = shareable
+      this.onShareableChanged(shareable)
+    }
     this.broadcast('state:changed', this.state)
     this.companion.broadcast()
   }
@@ -1230,6 +1430,26 @@ export class Controller {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send(channel, payload)
     }
+  }
+}
+
+function sameDisplay(a: DisplayOption, b: DisplayOption): boolean {
+  return a.id === b.id && a.name === b.name && a.width === b.width && a.height === b.height
+}
+
+/** Why a file operation failed, in words (no paths: they carry the Windows user name). */
+function describeFileError(error: unknown): string {
+  switch ((error as NodeJS.ErrnoException)?.code) {
+    case 'ENOSPC':
+      return 'the disk is full'
+    case 'EPERM':
+    case 'EACCES':
+    case 'EBUSY':
+      return 'the file is in use or read-only'
+    case 'ENOENT':
+      return 'the folder is gone (a removed drive?)'
+    default:
+      return 'Windows refused to write it'
   }
 }
 

@@ -28,6 +28,7 @@ import {
 } from '../components/MarkerList'
 import { NoteItem } from '../components/NoteItem'
 import { PlaybackRates } from '../components/PlaybackRates'
+import { RecordingWarnings } from '../components/RecordingWarnings'
 import { SkipButton } from '../components/SkipButton'
 import { Timeline } from '../components/Timeline'
 import { formatDuration } from '../format'
@@ -62,6 +63,12 @@ function useCompanionTheme(): [boolean, () => void] {
     })
   return [night, toggle]
 }
+
+/**
+ * The notes window on the trainer's PC shows this page too: a voice note played
+ * there comes out of the PC, into the recording (desktop audio) or a shared screen.
+ */
+const ON_THIS_PC = /Electron\//.test(navigator.userAgent)
 
 const PTT_BUTTONS: Record<PttTarget, { name: string; Icon: typeof Mic }> = {
   voiceChat: { name: 'Voice chat', Icon: Headphones },
@@ -160,6 +167,7 @@ function RecordingView({
           {recording.dictatingMarkerId ? 'Release' : 'Hold: note'}
         </Button>
       </div>
+      <RecordingWarnings hiddenWindowsError={state.hiddenWindowsError} warnings={recording.warnings} />
       {state.voiceNoteHotkey && (
         <p className="-mt-2 text-xs text-muted-foreground">
           The note is recorded by the PC’s microphone. Push-to-talk on the PC: {state.voiceNoteHotkey}.
@@ -172,6 +180,7 @@ function RecordingView({
         openRangeId={recording.openRangeId}
         dictatingMarkerId={recording.dictatingMarkerId}
         send={send}
+        notesPlayable={!ON_THIS_PC}
       />
     </div>
   )
@@ -341,6 +350,12 @@ function ReviewView({
         <input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />
         Follow playback
       </label>
+      {ON_THIS_PC && (
+        <p className="text-xs text-muted-foreground">
+          Voice notes played here come out of this PC: if you share Training Recording System on Discord with its
+          sound, the trainee hears them. Listen on a phone or tablet, or share without sound.
+        </p>
+      )}
 
       {shown ? (
         <MarkerDetail marker={shown} review={review} state={state} positionMs={positionMs} send={send} />

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Alert, Button, Label, Select, Switch } from '@ivao/atmosphere-react'
-import { CircleAlert, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { CircleAlert, Plus, RefreshCw } from 'lucide-react'
 import type { AppState, CaptureConfig, HiddenWindowRule, WindowOption } from '@shared/types'
 import type { SettingsPatch } from '../hooks'
+import { ConfirmDeleteButton } from './ConfirmDeleteButton'
 import { SetupSection, type SectionProps } from './SetupSection'
 
 function programName(exe: string): string {
@@ -90,16 +91,20 @@ export function HiddenWindowsCard({
                   {programName(rule.exe)} ({rule.exe})
                 </div>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={`Remove ${rule.title ?? programName(rule.exe)}`}
-                onClick={() =>
+              {rule.enabled && (
+                <span
+                  className={`shrink-0 text-xs ${state.hiddenWindowsFound.includes(rule.id) ? 'text-semantic-green-600' : 'text-muted-foreground'}`}
+                  title="A window is recognised by its program and exact title: if it is open but shown as not open, its title changed. Add it again from the list below."
+                >
+                  {state.hiddenWindowsFound.includes(rule.id) ? 'On screen' : 'Not open'}
+                </span>
+              )}
+              <ConfirmDeleteButton
+                label={`Remove ${rule.title ?? programName(rule.exe)}`}
+                onConfirm={() =>
                   save((current) => ({ hiddenWindows: current.hiddenWindows.filter((r) => r.id !== rule.id) }))
                 }
-              >
-                <Trash2 className="size-4" aria-hidden />
-              </Button>
+              />
             </li>
           ))}
         </ul>

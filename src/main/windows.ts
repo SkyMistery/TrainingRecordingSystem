@@ -4,6 +4,8 @@ import koffi from 'koffi'
 export interface DesktopWindow {
   /** Window handle, stable while the window exists. */
   id: string
+  /** Handle of the window that owns this one (a popup, menu or tooltip of it); null for none. */
+  ownerId: string | null
   exe: string
   title: string
   x: number
@@ -15,6 +17,7 @@ export interface DesktopWindow {
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 const DWMWA_EXTENDED_FRAME_BOUNDS = 9
 const DWMWA_CLOAKED = 14
+const GW_OWNER = 4
 /** Process ids are reused: forget their executables now and then. */
 const EXE_CACHE_MS = 10_000
 
@@ -22,10 +25,12 @@ const user32 = koffi.load('user32.dll')
 const kernel32 = koffi.load('kernel32.dll')
 const dwmapi = koffi.load('dwmapi.dll')
 
-const EnumWindowsProc = koffi.proto('bool __stdcall EnumWindowsProc(void *hwnd, intptr_t lParam)')
+koffi.proto('bool __stdcall EnumWindowsProc(void *hwnd, intptr_t lParam)')
 const EnumWindows = user32.func('bool __stdcall EnumWindows(EnumWindowsProc *proc, intptr_t lParam)')
 const IsWindowVisible = user32.func('bool __stdcall IsWindowVisible(void *hwnd)')
 const IsIconic = user32.func('bool __stdcall IsIconic(void *hwnd)')
+const GetWindow = user32.func('void *__stdcall GetWindow(void *hwnd, uint32_t cmd)')
+const GetWindowRect = user32.func('bool __stdcall GetWindowRect(void *hwnd, void *rect)')
 const GetWindowThreadProcessId = user32.func(
   'uint32_t __stdcall GetWindowThreadProcessId(void *hwnd, _Out_ uint32_t *pid)'
 )
@@ -48,9 +53,9 @@ function processExe(pid: number): string {
     exeCache.clear()
     exeCacheTime = Date.now()
   }
-  let exe = exeCache.get(pid)
-  if (exe !== undefined) return exe
-  exe = ''
+  const cached = exeCache.get(pid)
+  if (cached !== undefined) return cached
+  let exe = ''
   const handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
   if (handle) {
     try {
@@ -67,7 +72,8 @@ function processExe(pid: number): string {
       CloseHandle(handle)
     }
   }
-  exeCache.set(pid, exe)
+  // A failure is not remembered: the next poll tries again (a window that can't be matched isn't covered).
+  if (exe) exeCache.set(pid, exe)
   return exe
 }
 
@@ -75,6 +81,11 @@ function windowTitle(hwnd: unknown): string {
   const buffer = Buffer.alloc(512 * 2)
   const length = GetWindowTextW(hwnd, buffer, 512) as number
   return buffer.toString('utf16le', 0, length * 2)
+}
+
+/** "hwnd" as a stable id; koffi gives pointers as numbers or bigints. */
+function handleId(hwnd: unknown): string | null {
+  return hwnd ? String(koffi.address(hwnd)) : null
 }
 
 /**
@@ -95,11 +106,15 @@ export function listDesktopWindows(wanted?: (exe: string) => boolean): DesktopWi
     if (!exe || (wanted && !wanted(exe))) return true
     if (DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, cloaked, 4) === 0 && cloaked.readUInt32LE(0) !== 0) return true
     // The visible frame, without the invisible resize borders and shadow; always physical pixels.
-    if (DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, rect, 16) !== 0) return true
+    // If DWM can't tell (rare), the whole window rectangle still covers it, only a bit larger.
+    if (DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, rect, 16) !== 0 && !GetWindowRect(hwnd, rect)) {
+      return true
+    }
     const [left, top, right, bottom] = [0, 4, 8, 12].map((offset) => rect.readInt32LE(offset))
     if (right <= left || bottom <= top) return true
     found.push({
-      id: String(hwnd),
+      id: handleId(hwnd)!,
+      ownerId: handleId(GetWindow(hwnd, GW_OWNER)),
       exe,
       title: windowTitle(hwnd),
       x: left,

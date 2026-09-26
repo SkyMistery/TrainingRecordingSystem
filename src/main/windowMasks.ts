@@ -1,4 +1,5 @@
-import type { CaptureConfig, HiddenWindowRule, MaskRect, WindowOption } from '../shared/types'
+import type { CaptureConfig, HiddenWindowRule, MaskRect, MaskSlots, WindowOption } from '../shared/types'
+import { IGNORED_EXECUTABLES } from './programs'
 import type { Recorder } from './recorder/Recorder'
 import type { DesktopWindow } from './windows'
 
@@ -7,15 +8,17 @@ const POLL_MS = 50
 /** Extra margin around a covered window, in pixels. */
 const PADDING = 6
 /**
- * A moving window is covered over its last few positions too: the recording
- * shows the screen a moment after the mask was placed.
+ * A moving window is covered over its last few positions too, and where it is
+ * heading next: the recording shows the screen a moment after the mask was placed.
  */
 const TRAIL = 3
+/**
+ * A window that just went away (minimised, closed, another virtual desktop)
+ * stays covered a little longer: Windows animates it out after reporting it gone.
+ */
+const GRACE_MS = 600
 
 type WindowsModule = typeof import('./windows')
-
-/** Programs never offered as a hidden window. */
-const IGNORED_EXECUTABLES = new Set(['explorer.exe', 'searchhost.exe', 'shellexperiencehost.exe', 'textinputhost.exe'])
 
 function matchesRule(rule: HiddenWindowRule, window: Pick<DesktopWindow, 'exe' | 'title'>): boolean {
   return (
@@ -25,10 +28,10 @@ function matchesRule(rule: HiddenWindowRule, window: Pick<DesktopWindow, 'exe' |
   )
 }
 
-/** Top-left corner of the display in screen pixels, from the "@ x,y" in the OBS monitor name. */
-function displayOrigin(name: string): { x: number; y: number } {
+/** Top-left corner of the display in screen pixels, from the "@ x,y" in the OBS monitor name; null if absent. */
+export function displayOrigin(name: string): { x: number; y: number } | null {
   const match = /@\s*(-?\d+)\s*,\s*(-?\d+)/.exec(name)
-  return match ? { x: Number(match[1]), y: Number(match[2]) } : { x: 0, y: 0 }
+  return match ? { x: Number(match[1]), y: Number(match[2]) } : null
 }
 
 /**
@@ -40,12 +43,19 @@ export class WindowMasks {
   private windows: WindowsModule | null = null
   /** Recent positions of each covered window (display pixels), newest last. */
   private trails = new Map<string, MaskRect[]>()
+  /** Windows gone a moment ago: their last cover and until when it stays. */
+  private leaving = new Map<string, { rect: MaskRect; until: number }>()
+  /** Which window each mask follows; a window keeps its mask while it is on screen. */
+  private slots: (string | null)[] = []
   private failing = false
+  private found: string[] = []
 
   constructor(
     private readonly recorder: Recorder,
     private readonly capture: () => CaptureConfig,
-    private readonly onError: (message: string | null) => void
+    private readonly onError: (message: string | null) => void,
+    /** Rules with a matching window on screen, when that changes (for Setup). */
+    private readonly onFound: (ruleIds: string[]) => void
   ) {}
 
   async start(): Promise<void> {
@@ -63,6 +73,12 @@ export class WindowMasks {
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+  }
+
+  /** Covers the hidden windows now and waits until the recorder shows the masks (before recording). */
+  async refreshNow(): Promise<void> {
+    if (!this.windows || !this.recorder.isConnected()) return
+    await this.recorder.setMasks(this.currentMasks(this.windows))
   }
 
   /** Open windows that can be hidden, one entry per program and title. */
@@ -85,31 +101,59 @@ export class WindowMasks {
 
   private tick(): void {
     if (!this.windows || !this.recorder.isConnected()) {
-      this.trails.clear()
+      this.reset()
       // The top bar shows the lost connection; an old problem with the masks no longer applies.
       this.report(null)
       return
     }
-    const masks = this.currentMasks(this.windows)
+    let masks: MaskSlots
+    try {
+      masks = this.currentMasks(this.windows)
+    } catch (error) {
+      // Every 50 ms: an exception here must never escape into the main process.
+      this.report(error instanceof Error ? error.message : String(error))
+      return
+    }
     this.recorder.setMasks(masks).then(
       () => this.report(null),
       (error: unknown) => this.report(error instanceof Error ? error.message : String(error))
     )
   }
 
-  private currentMasks(windows: WindowsModule): MaskRect[] {
+  private reset(): void {
+    this.trails.clear()
+    this.leaving.clear()
+    this.slots = []
+  }
+
+  private currentMasks(windows: WindowsModule): MaskSlots {
     const { display, hiddenWindows } = this.capture()
     const rules = hiddenWindows.filter((rule) => rule.enabled)
     if (!display || rules.length === 0) {
-      this.trails.clear()
+      this.reset()
+      this.setFound([])
       return []
     }
     const origin = displayOrigin(display.name)
+    if (!origin) throw new Error('the position of the recorded monitor is unknown: choose it again in Setup → Display.')
     const programs = new Set(rules.map((rule) => rule.exe.toLowerCase()))
+    const open = windows.listDesktopWindows((exe) => programs.has(exe.toLowerCase()))
+    const matched = open.filter((window) => rules.some((rule) => matchesRule(rule, window)))
+    this.setFound(rules.filter((rule) => open.some((window) => matchesRule(rule, window))).map((rule) => rule.id))
+    // Popups, menus and tooltips of a hidden window (owned by it) can show its content too.
+    const hiddenIds = new Set(matched.map((window) => window.id))
+    const owned = open.filter(
+      (window) =>
+        !hiddenIds.has(window.id) &&
+        window.ownerId !== null &&
+        hiddenIds.has(window.ownerId) &&
+        matched.some((owner) => owner.exe.toLowerCase() === window.exe.toLowerCase())
+    )
+
+    const now = Date.now()
+    const covers = new Map<string, MaskRect>()
     const trails = new Map<string, MaskRect[]>()
-    const masks: MaskRect[] = []
-    for (const window of windows.listDesktopWindows((exe) => programs.has(exe.toLowerCase()))) {
-      if (!rules.some((rule) => matchesRule(rule, window))) continue
+    for (const window of [...matched, ...owned]) {
       const rect = {
         x: window.x - origin.x - PADDING,
         y: window.y - origin.y - PADDING,
@@ -118,11 +162,39 @@ export class WindowMasks {
       }
       const trail = [...(this.trails.get(window.id) ?? []), rect].slice(-TRAIL)
       trails.set(window.id, trail)
+      const covered = clip(union([...trail, ahead(trail)]), display.width, display.height)
+      if (covered) covers.set(window.id, covered)
+    }
+    for (const [id, trail] of this.trails) {
+      if (trails.has(id)) continue
       const covered = clip(union(trail), display.width, display.height)
-      if (covered) masks.push(covered)
+      if (covered) this.leaving.set(id, { rect: covered, until: now + GRACE_MS })
     }
     this.trails = trails
-    return masks
+    for (const [id, { rect, until }] of this.leaving) {
+      if (until < now || covers.has(id)) this.leaving.delete(id)
+      else covers.set(id, rect)
+    }
+    return this.assign(covers)
+  }
+
+  /** Masks by slot: a window keeps its slot, a new one takes the first free slot. */
+  private assign(covers: Map<string, MaskRect>): MaskSlots {
+    this.slots = this.slots.map((id) => (id !== null && covers.has(id) ? id : null))
+    for (const id of covers.keys()) {
+      if (this.slots.includes(id)) continue
+      const free = this.slots.indexOf(null)
+      if (free >= 0) this.slots[free] = id
+      else this.slots.push(id)
+    }
+    while (this.slots.length > 0 && this.slots.at(-1) === null) this.slots.pop()
+    return this.slots.map((id) => (id === null ? null : covers.get(id)!))
+  }
+
+  private setFound(ruleIds: string[]): void {
+    if (ruleIds.length === this.found.length && ruleIds.every((id, i) => id === this.found[i])) return
+    this.found = ruleIds
+    this.onFound(ruleIds)
   }
 
   /** Logged once per problem, not every 50 ms. */
@@ -133,6 +205,13 @@ export class WindowMasks {
       this.onError(problem ? `Hidden windows can’t be covered right now: ${problem}` : null)
     }
   }
+}
+
+/** Where a moving window will be at the next poll, from its last two positions. */
+function ahead(trail: MaskRect[]): MaskRect {
+  const last = trail.at(-1)!
+  const previous = trail.at(-2) ?? last
+  return { ...last, x: 2 * last.x - previous.x, y: 2 * last.y - previous.y }
 }
 
 function union(rects: MaskRect[]): MaskRect {

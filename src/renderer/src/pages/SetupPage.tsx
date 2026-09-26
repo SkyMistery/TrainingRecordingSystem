@@ -26,7 +26,7 @@ import { HiddenWindowsCard } from '../components/HiddenWindowsCard'
 import { MarkersCard } from '../components/MarkersCard'
 import { SetupSection, useCollapsedSections, type SectionProps } from '../components/SetupSection'
 import { VoiceNotesCard } from '../components/VoiceNotesCard'
-import { type SettingsPatch, useAudioLevels, usePatchSaver } from '../hooks'
+import { type SettingsPatch, usePatchSaver } from '../hooks'
 
 function useAction(): [string | null, <T>(fn: () => Promise<T>) => Promise<T | undefined>] {
   const [error, setError] = useState<string | null>(null)
@@ -282,7 +282,6 @@ function AudioCard({
   section: SectionProps
 }): React.JSX.Element {
   const connected = state.obs.status === 'connected'
-  const levels = useAudioLevels()
   const [kind, setKind] = useState<AudioSourceKind>('application')
   const [targets, setTargets] = useState<AudioTargetOption[]>([])
   const [target, setTarget] = useState<string | undefined>()
@@ -333,7 +332,6 @@ function AudioCard({
     >
       <AudioMixer
         sources={shown}
-        levels={levels}
         onMutedChange={(id, muted) => void run(() => window.api.setSourceMuted(id, muted))}
         onVolumeChange={(id, volumeDb) => setDragVolume((current) => ({ ...current, [id]: volumeDb }))}
         onVolumeCommit={(id, volumeDb) =>

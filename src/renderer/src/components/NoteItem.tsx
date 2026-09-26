@@ -13,12 +13,17 @@ const STATUS_TEXT: Partial<Record<Note['status'], string>> = {
   failed: 'Transcription failed'
 }
 
+const NOT_PLAYABLE =
+  'Not played while recording: on this PC the note would end up in the recording and in the voice chat. Listen on a phone or tablet (Companion).'
+
 interface NoteItemProps {
   note: Note
   folderName: string
   onTextChange: (text: string | null) => void
   onRetranscribe: () => void
   onDelete: () => void
+  /** False while recording on this PC: the note would play into the recording and the voice chat. */
+  playable?: boolean
 }
 
 /** One voice note: play it, read or edit its text, retry transcription. */
@@ -27,7 +32,8 @@ export function NoteItem({
   folderName,
   onTextChange,
   onRetranscribe,
-  onDelete
+  onDelete,
+  playable = true
 }: NoteItemProps): React.JSX.Element {
   const audio = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
@@ -53,9 +59,17 @@ export function NoteItem({
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
       />
-      <Button variant="ghost" size="icon" aria-label={playing ? 'Pause note' : 'Play note'} onClick={toggle}>
-        {playing ? <Pause className="size-4" aria-hidden /> : <Play className="size-4" aria-hidden />}
-      </Button>
+      <span title={playable ? undefined : NOT_PLAYABLE}>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={playing ? 'Pause note' : 'Play note'}
+          disabled={!playable}
+          onClick={toggle}
+        >
+          {playing ? <Pause className="size-4" aria-hidden /> : <Play className="size-4" aria-hidden />}
+        </Button>
+      </span>
       <div className="flex min-w-0 flex-1 flex-col gap-1 pt-1.5">
         <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">
           {formatDuration(note.recordedAtMs)} · {Math.max(1, Math.round(note.durationMs / 1000))} s

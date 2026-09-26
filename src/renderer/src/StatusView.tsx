@@ -41,12 +41,23 @@ export function StatusView(): React.JSX.Element {
   const last = recording.markers.at(-1)
   const categories = state.markerSettings.categories
   const lastCategories = categories.filter((category) => last?.categoryIds.includes(category.id))
+  // Shown until it is fixed: the trainer may not be looking at the main window.
+  const problem = state.hiddenWindowsError
+    ? 'Private windows NOT covered — see the app'
+    : recording.warnings.length > 0
+      ? `${recording.warnings.at(-1)}`
+      : null
 
   return (
     <div
       className={`flex h-full flex-col justify-center gap-1.5 border-2 bg-body px-4 transition-colors [-webkit-app-region:drag] ${
-        flash === 'error' ? 'border-semantic-red-500' : flash ? 'border-atmos-500' : 'border-border'
+        flash === 'error' || state.hiddenWindowsError
+          ? 'border-semantic-red-500'
+          : flash
+            ? 'border-atmos-500'
+            : 'border-border'
       }`}
+      title={problem ?? undefined}
     >
       <div className="flex items-center gap-3">
         <span className="size-3 animate-pulse rounded-full bg-semantic-red-500" aria-hidden />
@@ -61,7 +72,9 @@ export function StatusView(): React.JSX.Element {
         </span>
       </div>
       <div className="flex h-5 items-center gap-2 truncate text-sm">
-        {recording.dictatingMarkerId ? (
+        {state.hiddenWindowsError ? (
+          <span className="truncate font-semibold text-semantic-red-600">{problem}</span>
+        ) : recording.dictatingMarkerId ? (
           <span className="flex items-center gap-2 font-semibold text-semantic-red-600">
             <span className="size-2.5 animate-pulse rounded-full bg-semantic-red-500" aria-hidden />
             Recording voice note — release to save
@@ -70,6 +83,8 @@ export function StatusView(): React.JSX.Element {
           <span className="font-semibold">{FLASH_LABEL[flash]}</span>
         ) : recording.openRangeId ? (
           <span className="font-semibold text-semantic-red-600">Range open — press again to end it</span>
+        ) : problem ? (
+          <span className="truncate font-semibold text-semantic-red-600">⚠ {problem}</span>
         ) : last ? (
           <>
             <span
