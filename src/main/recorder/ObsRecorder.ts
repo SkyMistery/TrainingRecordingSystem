@@ -601,6 +601,8 @@ export class ObsRecorder implements Recorder {
     const { sceneCollections } = await this.call('GetSceneCollectionList')
     const { profiles } = await this.call('GetProfileList')
     if (previous.collection && sceneCollections.includes(previous.collection)) {
+      // Before the switch: a mask update still waiting for OBS then fails quietly.
+      this.sceneReady = false
       await this.call('SetCurrentSceneCollection', { sceneCollectionName: previous.collection })
     }
     if (previous.profile && profiles.includes(previous.profile)) {
