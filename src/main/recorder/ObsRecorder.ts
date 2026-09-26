@@ -120,6 +120,12 @@ export class ObsRecorder implements Recorder {
   /** Scene item id of each mask input, in order; null until read from the scene. */
   private maskItems: number[] | null = null
   private maskUpdate: Promise<void> | null = null
+  /**
+   * OBS is on the app's scene collection with its scene set up. Not yet while
+   * connecting (OBS still on the trainer's own), nor after a switch away from it.
+   */
+  private sceneReady = false
+  private enteringWorkspace = false
 
   constructor(
     private readonly connection: () => ObsConnectionParams,
@@ -130,8 +136,19 @@ export class ObsRecorder implements Recorder {
       const wasConnected = this.connected
       const durationMs = this.recording ? this.currentTimeMs() : undefined
       this.connected = false
+      this.sceneReady = false
       this.setRecording(false)
       if (wasConnected) this.events.onDisconnected(error.message || 'Connection to OBS closed', durationMs)
+    })
+
+    // Masks wait while OBS is on another scene collection (or the app is still setting up its own).
+    this.obs.on('CurrentSceneCollectionChanging', () => {
+      this.sceneReady = false
+      this.forgetMasks()
+    })
+    this.obs.on('CurrentSceneCollectionChanged', ({ sceneCollectionName }) => {
+      // Switched back by hand; when the app switches, enterWorkspace marks it ready once the scene is set up.
+      if (sceneCollectionName === COLLECTION && !this.enteringWorkspace) this.sceneReady = true
     })
 
     this.obs.on('InputVolumeMeters', ({ inputs }) => {
@@ -190,6 +207,7 @@ export class ObsRecorder implements Recorder {
       throw error
     }
     this.connected = true
+    this.sceneReady = false
     this.forgetMasks()
     try {
       const { obsVersion } = await this.call('GetVersion')
@@ -213,6 +231,7 @@ export class ObsRecorder implements Recorder {
       await this.exclusive(() => this.restoreWorkspace())
     } finally {
       this.connected = false
+      this.sceneReady = false
       this.setRecording(false)
       await this.obs.disconnect()
     }
@@ -298,6 +317,13 @@ export class ObsRecorder implements Recorder {
 
   setMasks(masks: MaskRect[]): Promise<void> {
     this.wantedMasks = masks
+    if (!this.sceneReady) {
+      // Still connecting, or OBS is on the trainer's own scenes: shown once the app's scene is set up
+      // (masks are asked for again every few ms). A recording of other scenes can't be covered, though.
+      return this.recording
+        ? Promise.reject(new Error(`OBS was switched to another scene collection: switch it back to “${COLLECTION}”.`))
+        : Promise.resolve()
+    }
     // One update at a time; it keeps going until OBS shows the latest masks.
     this.maskUpdate ??= this.updateMasks().finally(() => {
       this.maskUpdate = null
@@ -488,6 +514,16 @@ export class ObsRecorder implements Recorder {
 
   /** Switches OBS to the app's own profile, scene collection and scene. */
   private async enterWorkspace(): Promise<void> {
+    this.enteringWorkspace = true
+    try {
+      await this.setUpWorkspace()
+      this.sceneReady = true
+    } finally {
+      this.enteringWorkspace = false
+    }
+  }
+
+  private async setUpWorkspace(): Promise<void> {
     const collections = await this.call('GetSceneCollectionList')
     const profiles = await this.call('GetProfileList')
     const needsSwitch = collections.currentSceneCollectionName !== COLLECTION || profiles.currentProfileName !== PROFILE
@@ -700,6 +736,7 @@ export class ObsRecorder implements Recorder {
 
   private async updateMasks(): Promise<void> {
     for (;;) {
+      if (!this.sceneReady) return
       const masks = this.wantedMasks
       const key = JSON.stringify(masks)
       if (this.shownMasks?.key === key && Date.now() - this.shownMasks.at < MASK_REFRESH_MS) return
@@ -709,6 +746,8 @@ export class ObsRecorder implements Recorder {
       } catch (error) {
         // Read everything from OBS again next time (e.g. the scene collection was switched).
         this.forgetMasks()
+        // Switched away meanwhile: setMasks reports it if that matters (during a recording).
+        if (!this.sceneReady) return
         throw error
       }
     }

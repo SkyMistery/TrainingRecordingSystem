@@ -25,7 +25,8 @@ export interface Recorder {
   /**
    * Covers these parts of the captured display (private windows) in the
    * recording, previews and screenshots; an empty list uncovers everything.
-   * Called often: repeating the same masks must be cheap.
+   * Called often: repeating the same masks must be cheap. While the recorder
+   * is still setting up its scene this is not an error: the next call applies them.
    */
   setMasks(masks: MaskRect[]): Promise<void>
   /** Small JPEG of the captured display as a data URL, for previews. */

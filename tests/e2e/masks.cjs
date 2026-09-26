@@ -51,8 +51,12 @@ $timer.Start()
 async function main() {
   const app = spawn(`${ROOT}/node_modules/electron/dist/electron.exe`, ['.', '--remote-debugging-port=9336'], {
     cwd: ROOT,
-    stdio: 'ignore'
+    stdio: ['ignore', 'pipe', 'pipe']
   })
+  // The main process's log: connecting to OBS (switching it to the app's scene) must not report the masks failing.
+  let output = ''
+  app.stdout.on('data', (chunk) => (output += chunk))
+  app.stderr.on('data', (chunk) => (output += chunk))
   let target
   for (let i = 0; i < 40 && !target; i++) {
     await sleep(500)
@@ -89,8 +93,10 @@ async function main() {
   const log = (...a) => console.log('[e2e]', ...a)
 
   let state
+  const startupErrors = new Set()
   for (let i = 0; i < 30; i++) {
     state = await evaluate('window.api.getState()')
+    if (state.hiddenWindowsError) startupErrors.add(state.hiddenWindowsError)
     if (state.obs.status === 'connected' && !state.busy) break
     await sleep(500)
   }
@@ -193,6 +199,12 @@ async function main() {
     })
   })
   log('app closed')
+  check(
+    startupErrors.size === 0,
+    `no hidden-windows error while connecting (${[...startupErrors].join(' | ') || 'none'})`
+  )
+  const logged = output.split(/\r?\n/).filter((line) => line.includes('Could not cover hidden windows'))
+  check(logged.length === 0, `nothing logged about hidden windows (${logged.join(' | ') || 'none'})`)
   console.log(failures ? `${failures} FAILED` : 'ALL PASSED')
   if (failures) process.exitCode = 1
 }

@@ -86,6 +86,8 @@ export class WindowMasks {
   private tick(): void {
     if (!this.windows || !this.recorder.isConnected()) {
       this.trails.clear()
+      // The top bar shows the lost connection; an old problem with the masks no longer applies.
+      this.report(null)
       return
     }
     const masks = this.currentMasks(this.windows)
