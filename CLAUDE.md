@@ -44,8 +44,10 @@ npm run dist        # installer
 
 Release: bump package.json version, commit, `git push`, then `git tag vX.Y.Z`
 and `git push origin vX.Y.Z` (the workflow creates a draft release, uploads,
-publishes). Also update the ROADMAP status table and the README status
-line. Afterwards check that only one release exists for the tag (drafts
+publishes). Every push of main and of the tag, and publishing a draft through
+the API, asks Carmine to confirm (global main-gate): do them only after he asked
+for the release in chat. Also update the ROADMAP status table and the README
+status line. Afterwards check that only one release exists for the tag (drafts
 included: `gh api repos/SkyMistery/TrainingRecordingSystem/releases`) and that
 its latest.yml sha512 matches the uploaded .exe. Deleting a duplicate draft
 needs the trainer's OK. The workflow itself refuses a tag that doesn't match
