@@ -152,6 +152,11 @@ export function updateSettings(patch: Partial<Settings>): Promise<Settings> {
   return next.then(() => getSettings())
 }
 
+/** Resolves once every queued write has finished (or failed): quitting waits for it. */
+export function flushSettings(): Promise<void> {
+  return writes
+}
+
 export function encryptSecret(secret: string): string | null {
   if (!secret) return null
   return safeStorage.encryptString(secret).toString('base64')

@@ -4,7 +4,7 @@ import type { Theme, ThemePreference, ThemeState } from '../shared/theme'
 import { isAppPage, loadAppPage } from './appPages'
 import { Controller } from './controller'
 import { handleMediaScheme, registerMediaScheme } from './media'
-import { getSettings, updateSettings } from './settings'
+import { flushSettings, getSettings, updateSettings } from './settings'
 import { installUpdate, startUpdater } from './updater'
 
 registerMediaScheme()
@@ -101,7 +101,11 @@ async function shutdown(): Promise<void> {
     }, SHUTDOWN_TIMEOUT_MS)
   )
   await Promise.race([
-    controller?.shutdown().catch((error: unknown) => console.error('Shutdown failed', error)),
+    (async () => {
+      await controller?.shutdown().catch((error: unknown) => console.error('Shutdown failed', error))
+      // Restoring OBS forgets the remembered workspace: let that reach settings.json before exiting.
+      await flushSettings()
+    })(),
     timeout
   ])
 }
