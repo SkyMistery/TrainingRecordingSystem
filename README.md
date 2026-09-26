@@ -5,7 +5,7 @@ moments while it happens, attach voice notes that are transcribed
 automatically, and review everything during the debriefing — sharing the
 recording on Discord while your notes stay on another screen or a tablet.
 
-> Status: v1.4 — recording, markers, voice notes, review and Companion are
+> Status: v1.5 — recording, markers, voice notes, review and Companion are
 > released. See the [roadmap](docs/ROADMAP.md) and [future ideas](docs/FUTURE.md).
 
 ## Features
