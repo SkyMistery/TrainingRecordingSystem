@@ -1,105 +1,56 @@
 // Voice notes with a stale microphone id, in an isolated app instance (own
-// settings folder), against the real OBS and microphone. Also checks that a
-// note started from a button holds the voice-note key (Discord push-to-mute)
-// only when "holdHotkeyFromButtons" is on, without starting a second note.
-const { spawn } = require('node:child_process')
-const { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } = require('node:fs')
+// settings and sessions folder in %TEMP%; the trainer's settings are only
+// read), against the real OBS and microphone. Also checks that a note started
+// from a button holds the voice-note key (Discord push-to-mute) only when
+// "holdHotkeyFromButtons" is on, without starting a second note.
+// Keys: F16 (voice note), sent to the whole PC.
+// Needs: the app closed (one app per OBS), OBS idle, TRS_OBS_PASSWORD set.
+const { existsSync, rmSync } = require('node:fs')
 const { join } = require('node:path')
-const ROOT = require('node:path').resolve(__dirname, '../..').split('\\').join('/')
-const OBS_PASSWORD = process.argv[2]
-const USERDATA = join(require('node:os').tmpdir(), 'trs-e2e-mic')
-const { uIOhook } = require(`${ROOT}/node_modules/uiohook-napi`)
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-let failures = 0
-const check = (label, ok, detail = '') => {
-  if (!ok) failures++
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? '  — ' + detail : ''}`)
-}
+const { uIOhook, UiohookKey } = require('uiohook-napi')
+const { check, isolatedSettings, launch, obsPassword, realSettings, report, sleep, waitForState } = require('./lib.cjs')
 
-const real = JSON.parse(readFileSync(join(process.env.APPDATA, 'Training Recording System', 'settings.json'), 'utf8'))
+const PASSWORD = obsPassword()
 const key = (code, label) => ({ device: 'keyboard', code, ctrl: false, alt: false, shift: false, label })
+const real = realSettings()
 
 async function runCase(name, notes) {
   const holdKey = notes.holdHotkeyFromButtons
-  rmSync(USERDATA, { recursive: true, force: true })
-  mkdirSync(USERDATA, { recursive: true })
-  writeFileSync(
-    join(USERDATA, 'settings.json'),
-    JSON.stringify({
-      capture: real.capture,
-      // Isolated test profile: the terms dialog would cover the page.
-      termsAccepted: { version: 1, acceptedAt: new Date().toISOString() },
-      companion: { enabled: false, lan: false, port: 17647 },
-      markers: {
-        ...real.markers,
-        preRollSeconds: 3,
-        statusWindow: false,
-        sound: false,
-        hotkeys: { marker: key(91, 'F13'), range: key(92, 'F14'), voiceNote: key(99, 'F16') }
-      },
-      notes: { ...real.notes, ...notes, transcribe: false }
-    })
-  )
-  const app = spawn(
-    `${ROOT}/node_modules/electron/dist/electron.exe`,
-    ['.', '--remote-debugging-port=9335', `--user-data-dir=${USERDATA}`],
-    { cwd: ROOT }
-  )
-  let target
-  for (let i = 0; i < 40 && !target; i++) {
-    await sleep(500)
-    try {
-      target = (await (await fetch('http://127.0.0.1:9335/json')).json()).find(
-        (t) => t.type === 'page' && t.url.endsWith('index.html')
-      )
-    } catch {}
-  }
-  const ws = new WebSocket(target.webSocketDebuggerUrl)
-  await new Promise((r) => ws.addEventListener('open', r))
-  let id = 0
-  const evaluate = (expression) =>
-    new Promise((resolve, reject) => {
-      const n = ++id
-      const h = (m) => {
-        const d = JSON.parse(m.data)
-        if (d.id !== n) return
-        ws.removeEventListener('message', h)
-        if (d.result?.exceptionDetails) reject(new Error(d.result.exceptionDetails.exception?.description))
-        else resolve(d.result?.result?.value)
+  const settings = isolatedSettings('mic', {
+    capture: { ...real.capture, hiddenWindows: [] },
+    markers: {
+      preRollSeconds: 3,
+      hotkeys: {
+        marker: key(UiohookKey.F13, 'F13'),
+        range: key(UiohookKey.F14, 'F14'),
+        voiceNote: key(UiohookKey.F16, 'F16')
       }
-      ws.addEventListener('message', h)
-      ws.send(
-        JSON.stringify({
-          id: n,
-          method: 'Runtime.evaluate',
-          params: { expression, awaitPromise: true, returnByValue: true }
-        })
-      )
-    })
-  await evaluate(
-    `window.api.connectObs({ host: '127.0.0.1', port: 4455, password: ${JSON.stringify(OBS_PASSWORD)} }).catch((e) => e.message)`
-  )
-  let state
-  for (let i = 0; i < 20; i++) {
-    state = await evaluate('window.api.getState()')
-    if (state.obs.status === 'connected' && !state.busy) break
-    await sleep(500)
-  }
-  let folder
+    },
+    notes: { ...real.notes, ...notes, transcribe: false }
+  })
+  const run = await launch({ name: 'mic', port: 9335, settings })
+  const { evaluate } = run
   try {
+    await evaluate(
+      `window.api.connectObs({ host: '127.0.0.1', port: 4455, password: ${JSON.stringify(PASSWORD)} }).catch((e) => e.message)`
+    )
+    let state = await waitForState(evaluate, (s) => s.obs.status === 'connected' && !s.busy)
+    if (state.obs.status !== 'connected') throw new Error(`OBS not connected: ${state.obs.error}`)
     await evaluate(
       `window.api.startSession({traineeVid:'000000',traineeName:'E2E test',position:'TEST_APP',trainingType:'Microphone test',trainerVid:'',date:'2026-09-24'}, true)`
     )
+    state = await waitForState(evaluate, (s) => s.recording !== null)
+    const folder = join(settings.sessionsDir, state.recording.folderName)
     await sleep(2500)
     uIOhook.start()
-    uIOhook.keyToggle(99, 'down')
+    uIOhook.keyToggle(UiohookKey.F16, 'down')
     await sleep(1500)
-    uIOhook.keyToggle(99, 'up')
+    uIOhook.keyToggle(UiohookKey.F16, 'up')
     await sleep(2000)
     // Also through the UI command, like the "Hold to dictate" button.
     const keyEvents = []
-    const onDown = (e) => e.keycode === 99 && keyEvents.push('down')
-    const onUp = (e) => e.keycode === 99 && keyEvents.push('up')
+    const onDown = (e) => e.keycode === UiohookKey.F16 && keyEvents.push('down')
+    const onUp = (e) => e.keycode === UiohookKey.F16 && keyEvents.push('up')
     uIOhook.on('keydown', onDown)
     uIOhook.on('keyup', onUp)
     await evaluate(`window.api.command('startNote')`)
@@ -117,23 +68,20 @@ async function runCase(name, notes) {
       `during: [${heldDuringNote}], after: [${keyEvents.join(',')}]`
     )
     state = await evaluate('window.api.getState()')
-    folder = join(process.env.USERPROFILE, 'Documents', 'IVAO TRS', 'Sessions', state.recording.folderName)
-    const notes = state.recording.markers.flatMap((m) => m.notes)
+    const saved = state.recording.markers.flatMap((m) => m.notes)
     check(
       `${name}: both voice notes saved (hotkey and button)`,
-      notes.length === 2,
-      `${notes.length} notes, files: ${notes.map((n) => (existsSync(join(folder, n.audio)) ? 'OK' : 'MISSING')).join(',')}`
+      saved.length === 2 && saved.every((n) => existsSync(join(folder, n.audio))),
+      `${saved.length} notes`
     )
     return { microphoneError: state.microphoneError }
   } finally {
+    uIOhook.stop()
+    // Only this instance's own session: it records into its own sessions folder.
     await evaluate('window.api.getState().then((s) => s.recording && window.api.stopSession())').catch(() => undefined)
-    await evaluate('window.close()').catch(() => undefined)
-    ws.close()
-    await new Promise((r) => {
-      const timer = setTimeout(() => (app.kill(), r()), 8000)
-      app.on('exit', () => (clearTimeout(timer), r()))
-    })
-    if (folder) rmSync(folder, { recursive: true, force: true })
+    await run.close()
+    rmSync(settings.sessionsDir, { recursive: true, force: true })
+    rmSync(run.userData, { recursive: true, force: true })
   }
 }
 
@@ -154,8 +102,7 @@ async function runCase(name, notes) {
     /not found/.test(second.microphoneError ?? ''),
     String(second.microphoneError)
   )
-  rmSync(USERDATA, { recursive: true, force: true })
-  console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`)
+  report()
 })().catch((e) => {
   console.error('FAILED', e)
   process.exit(1)

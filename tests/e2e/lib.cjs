@@ -1,7 +1,7 @@
 // Shared helpers for the end-to-end scripts: an isolated app instance driven
 // through the Chrome DevTools Protocol, checks and the OBS password.
 const { spawn } = require('node:child_process')
-const { mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs')
+const { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 const { join, resolve } = require('node:path')
 
@@ -62,13 +62,14 @@ function isolatedSettings(name, extra = {}) {
  * returns a CDP handle on the main window. `settings` are written first.
  * `exited` resolves when the process ends.
  */
-async function launch({ name, port, settings, args = [], fresh = true }) {
+async function launch({ name, port, settings, args = [], fresh = true, prepare }) {
   const userData = join(tmpdir(), `trs-e2e-${name}`)
   // fresh: false starts the same instance again (a restart after a crash), settings as it left them.
   if (fresh) {
     rmSync(userData, { recursive: true, force: true })
     mkdirSync(userData, { recursive: true })
     writeFileSync(join(userData, 'settings.json'), JSON.stringify(settings))
+    prepare?.(userData)
   }
   const app = spawn(
     `${ROOT}/node_modules/electron/dist/electron.exe`,
@@ -142,6 +143,27 @@ async function launch({ name, port, settings, args = [], fresh = true }) {
   return { app, exited, evaluate, close, userData, output: () => output }
 }
 
+/**
+ * Gives an isolated instance the trainer's transcription models, hard-linked
+ * (not copied: they are hundreds of MB). Returns the models it got.
+ */
+function linkModels(userData, models = ['base']) {
+  const from = join(process.env.APPDATA, 'Training Recording System', 'models')
+  mkdirSync(join(userData, 'models'), { recursive: true })
+  const linked = []
+  for (const model of models) {
+    const name = `ggml-${model}.bin`
+    if (!existsSync(join(from, name))) continue
+    try {
+      linkSync(join(from, name), join(userData, 'models', name))
+    } catch {
+      copyFileSync(join(from, name), join(userData, 'models', name))
+    }
+    linked.push(model)
+  }
+  return linked
+}
+
 /** Waits until `predicate(state)` is true; returns the last state. */
 async function waitForState(evaluate, predicate, timeoutMs = 20_000) {
   const until = Date.now() + timeoutMs
@@ -163,6 +185,7 @@ module.exports = {
   realSettings,
   isolatedSettings,
   launch,
+  linkModels,
   waitForState,
   failures: () => failures
 }
