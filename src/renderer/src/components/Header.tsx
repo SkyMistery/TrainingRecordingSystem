@@ -100,51 +100,86 @@ function Segmented<T extends string>({
 }
 
 /**
- * A new version: its download progress, then a button to install it now.
- * Closing the app installs it too; never in the middle of a recording.
+ * A new version: nothing happens by itself. "Update to …" (confirmed)
+ * downloads it, "Restart to update" (confirmed) installs it; never during a recording.
  */
 function UpdateButton({ update, recording }: { update: UpdateState; recording: boolean }): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
+  const [confirm, setConfirm] = useState<'download' | 'install' | null>(null)
   const [installing, setInstalling] = useState(false)
-  if (update.status !== 'ready') {
-    return (
-      <span
-        className="flex h-7 items-center gap-1.5 px-2 text-xs text-white/80"
-        title={
-          update.status === 'error'
-            ? 'The download stopped: it is tried again later.'
-            : 'Downloading in the background: it installs when you close the app.'
-        }
-      >
+  const fail = (e: unknown): void => setError(e instanceof Error ? e.message : String(e))
+  const button = 'flex h-7 items-center gap-1.5 rounded-sm px-3 text-xs font-semibold text-white disabled:opacity-60'
+  const blocked = recording ? 'Stop the recording first.' : undefined
+
+  let trigger: React.JSX.Element
+  if (update.status === 'downloading') {
+    trigger = (
+      <span className="flex h-7 items-center gap-1.5 px-2 text-xs text-white/80">
         <Download className="size-3.5" aria-hidden />
-        {update.status === 'error'
-          ? `Update ${update.version} paused`
-          : `Update ${update.version} · ${update.percent}%`}
+        Update {update.version} · {update.percent}%
       </span>
     )
-  }
-  return (
-    <>
+  } else if (update.status === 'ready') {
+    trigger = (
       <button
-        className="flex h-7 items-center gap-1.5 rounded-sm bg-semantic-green-600 px-3 text-xs font-semibold text-white hover:bg-semantic-green-700 disabled:opacity-60"
+        className={`${button} bg-semantic-green-600 hover:bg-semantic-green-700`}
         disabled={recording || installing}
-        title={
-          recording
-            ? 'Stop the recording first. The update also installs when you close the app.'
-            : `Install version ${update.version} now and restart`
-        }
-        onClick={() => {
-          setError(null)
-          setInstalling(true)
-          window.api.installUpdate().catch((e: unknown) => {
-            setInstalling(false)
-            setError(e instanceof Error ? e.message : String(e))
-          })
-        }}
+        title={blocked ?? `Install version ${update.version} now and restart`}
+        onClick={() => setConfirm('install')}
       >
         <RefreshCw className={`size-3.5 ${installing ? 'animate-spin' : ''}`} aria-hidden />
         {installing ? 'Updating…' : `Restart to update (${update.version})`}
       </button>
+    )
+  } else {
+    trigger = (
+      <button
+        className={`${button} bg-white/15 hover:bg-white/25`}
+        disabled={recording}
+        title={blocked ?? `Download version ${update.version}`}
+        onClick={() => setConfirm('download')}
+      >
+        <Download className="size-3.5" aria-hidden />
+        {update.status === 'error' ? `Update ${update.version}: try again` : `Update to ${update.version}`}
+      </button>
+    )
+  }
+
+  return (
+    <>
+      {trigger}
+      <Dialog
+        open={confirm !== null}
+        onOpenChange={(open) => !open && setConfirm(null)}
+        title={confirm === 'install' ? `Install version ${update.version}?` : `Download version ${update.version}?`}
+        description={
+          confirm === 'install'
+            ? 'The app closes (OBS gets your profile back), installs the update and starts again.'
+            : 'It downloads in the background from the app’s GitHub page. Nothing is installed until you choose “Restart to update”.'
+        }
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={() => setConfirm(null)}>
+            Not now
+          </Button>
+          <Button
+            onClick={() => {
+              const action = confirm
+              setConfirm(null)
+              setError(null)
+              if (action === 'install') {
+                setInstalling(true)
+                window.api.installUpdate().catch((e: unknown) => {
+                  setInstalling(false)
+                  fail(e)
+                })
+              } else window.api.downloadUpdate().catch(fail)
+            }}
+          >
+            {confirm === 'install' ? 'Install and restart' : 'Download'}
+          </Button>
+        </div>
+      </Dialog>
       <Dialog open={error !== null} onOpenChange={(open) => !open && setError(null)} title="Could not update">
         <Alert
           variant="destructive"

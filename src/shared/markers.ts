@@ -33,6 +33,14 @@ export function previousMarker(markers: Marker[], positionMs: number): Marker | 
   return before.at(-1) ?? null
 }
 
+/** Recording time now, extrapolated from the last update; frozen while OBS is paused. */
+export function recordingTime(
+  recording: { elapsedMs: number; sampledAt: number; paused: boolean },
+  now: number
+): number {
+  return recording.paused ? recording.elapsedMs : recording.elapsedMs + (now - recording.sampledAt)
+}
+
 /** Position now, extrapolated from the last report while playing. */
 export function livePosition(player: PlayerState, now: number, durationMs: number): number {
   const position = player.playing ? player.positionMs + (now - player.sampledAt) * player.rate : player.positionMs

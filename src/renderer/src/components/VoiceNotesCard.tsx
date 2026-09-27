@@ -86,9 +86,13 @@ export function VoiceNotesCard({ state, section }: { state: AppState; section: S
   useEffect(() => setVocabulary(settings.vocabulary), [settings.vocabulary])
 
   const saver = usePatchSaver(settings, window.api.saveNoteSettings)
+  // Refused changes are shown (e.g. holding a voice-note key the app can't press).
+  const [saveError, setSaveError] = useState<string | null>(null)
   const save = useCallback(
-    (patch: Partial<NoteSettings>) =>
-      void saver(patch).catch((error: unknown) => console.error('Could not save the voice note settings', error)),
+    (patch: Partial<NoteSettings>) => {
+      setSaveError(null)
+      void saver(patch).catch((e: unknown) => setSaveError(e instanceof Error ? e.message : String(e)))
+    },
     [saver]
   )
 
@@ -252,6 +256,8 @@ export function VoiceNotesCard({ state, section }: { state: AppState; section: S
         {transcription.downloadError && (
           <span className="text-xs text-semantic-red-600">Download failed: {transcription.downloadError}</span>
         )}
+        {transcription.error && <span className="text-xs text-semantic-red-600">{transcription.error}</span>}
+        {saveError && <span className="text-xs text-semantic-red-600">Not saved: {saveError}</span>}
         {settings.transcribe && !transcription.installedModels.includes(settings.model) && !transcription.download && (
           <span className="text-xs text-muted-foreground">
             Download the selected model once; notes recorded before that are transcribed as soon as it is ready.

@@ -64,7 +64,11 @@ function ObsConnectionCard({ state, section }: { state: AppState; section: Secti
     })
   }, [])
 
+  // A second click (or Enter) while connecting would cut the first attempt short.
+  const [pending, setPending] = useState(false)
   const connect = (): void => {
+    if (pending) return
+    setPending(true)
     void run(async () => {
       await window.api.connectObs({
         host,
@@ -73,7 +77,7 @@ function ObsConnectionCard({ state, section }: { state: AppState; section: Secti
       })
       if (password !== '') setHasPassword(true)
       setPassword('')
-    })
+    }).finally(() => setPending(false))
   }
 
   const { obs } = state
@@ -116,7 +120,11 @@ function ObsConnectionCard({ state, section }: { state: AppState; section: Secti
             onChange={(e) => setPassword(e.target.value)}
           />
         </div>
-        <Button type="submit" isLoading={obs.status === 'connecting'} disabled={state.recording !== null}>
+        <Button
+          type="submit"
+          isLoading={obs.status === 'connecting' || pending}
+          disabled={state.recording !== null || pending}
+        >
           <Plug className="size-4" aria-hidden />
           {obs.status === 'connected' ? 'Reconnect' : 'Connect'}
         </Button>
@@ -412,6 +420,14 @@ function SessionsFolderCard({ state, section }: { state: AppState; section: Sect
       <code className="select-text break-all rounded-sm bg-fuselage-100 p-2 font-mono text-xs dark:bg-fuselage-800">
         {state.sessionsDir}
       </code>
+      {state.sessionsDirWarning && (
+        <Alert
+          variant="destructive"
+          Icon={CircleAlert}
+          title="About this folder"
+          description={state.sessionsDirWarning}
+        />
+      )}
       <div className="flex flex-wrap gap-2">
         <Button
           variant="outline"

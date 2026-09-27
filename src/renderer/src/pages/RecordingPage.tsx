@@ -6,6 +6,7 @@ import type { SendCommand } from '../commands'
 import { AudioMixer } from '../components/AudioMixer'
 import { MarkerList } from '../components/MarkerList'
 import { RecordingWarnings } from '../components/RecordingWarnings'
+import { recordingTime } from '@shared/markers'
 import { formatDuration } from '../format'
 import { useNow } from '../hooks'
 
@@ -14,7 +15,8 @@ const ElapsedTime = memo(function ElapsedTime({ recording }: { recording: Record
   const now = useNow(true)
   return (
     <div className="font-mono text-5xl font-medium tabular-nums" aria-label="Elapsed time">
-      {formatDuration(recording.elapsedMs + (now - recording.sampledAt))}
+      {formatDuration(recordingTime(recording, now))}
+      {recording.paused && <span className="ml-3 align-middle text-base text-semantic-yellow-700">Paused in OBS</span>}
     </div>
   )
 })

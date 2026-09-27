@@ -21,7 +21,7 @@ const INTRO: Record<string, string> = {
  * whisper-cli reads its arguments in the Windows ANSI code page: the hint is
  * kept to plain ASCII (accents dropped), which is enough to steer spelling.
  */
-function toAscii(text: string): string {
+export function toAscii(text: string): string {
   return text
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
@@ -30,22 +30,28 @@ function toAscii(text: string): string {
     .trim()
 }
 
-/** Vocabulary hint for whisper: ATC terms, the ICAO alphabet and the trainer's own words. */
+/**
+ * Vocabulary hint for whisper: the trainer's own words, ATC terms and the ICAO
+ * alphabet. whisper keeps only the end of a long prompt, so the intro (the
+ * language's style) and the trainer's words come last, where they are kept.
+ */
 export function buildPrompt(language: string, vocabulary: string): string {
   const own = toAscii(vocabulary.slice(0, MAX_VOCABULARY_LENGTH)).replace(/[\s,;]+$/, '')
-  return `${INTRO[language] ?? INTRO.en} ${ATC_TERMS}. ${ICAO_ALPHABET}.${own ? ` ${own}.` : ''}`
+  return `${ICAO_ALPHABET}. ${ATC_TERMS}. ${INTRO[language] ?? INTRO.en}${own ? ` ${own}.` : ''}`
 }
 
-const words = (text: string): string[] => text.toLowerCase().match(/[a-z0-9]+/g) ?? []
+/** Words in any script (a Greek or Russian note is not made of the prompt's words). */
+const words = (text: string): string[] => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
 
 /**
  * On silence whisper tends to repeat a stretch of the prompt ("QNH, squawk,
- * runway…"): that is no speech. A note that only uses words from the prompt
- * in its own order ("Taxi via Alfa, Bravo") is kept, as are one or two words.
+ * runway, taxi, holding point…"): that is no speech. Only a long run of prompt
+ * words in the prompt's own order counts: a real note that happens to use a
+ * few of them ("Line up, takeoff", "Alfa Bravo Charlie") is kept.
  */
 export function echoesPrompt(text: string, prompt: string): boolean {
   const said = words(text)
-  if (said.length < 3) return false
+  if (said.length < 6) return false
   return ` ${words(prompt).join(' ')} `.includes(` ${said.join(' ')} `)
 }
 
@@ -84,4 +90,17 @@ export async function isSilent(wavPath: string): Promise<boolean> {
     offset += 8 + size + (size % 2)
   }
   return false
+}
+
+/**
+ * Whisper marks silence and noises with tags like [BLANK_AUDIO] or (wind
+ * blowing): they go. Brackets with digits are words ("QNH (1013)") and stay.
+ */
+export function cleanTranscript(output: string, prompt: string): string {
+  const text = output
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\((?![^)]*\d)[^)]*\)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return echoesPrompt(text, prompt) ? '' : text
 }

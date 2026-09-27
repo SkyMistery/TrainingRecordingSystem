@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdir, rm, unlink, writeFile } from 'node:fs/promises'
-import { basename, join, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { basename, join, resolve, sep } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, screen, shell } from 'electron'
 import type {
   AppState,
@@ -177,6 +179,10 @@ export class Controller {
   private displayTimer: NodeJS.Timeout | null = null
   /** The hook, OBS and the Companion run (after the terms of use are accepted). */
   private servicesStarted = false
+  /** A session being started (see startSession). */
+  private starting: Promise<void> | null = null
+  /** Quitting: no new session, no new connection. */
+  private shuttingDown = false
   /** Whether the main window may be captured (shared on Discord): only while a review is open. */
   private shareable = false
   private state: AppState
@@ -253,6 +259,10 @@ export class Controller {
         if (!times || !valid(times.timeMs) || !(times.endMs === null || valid(times.endMs))) {
           throw new Error('Invalid marker time')
         }
+        // Only the range being recorded is open: a closed one would never get an end again.
+        if (times.endMs === null && marker.kind === 'range' && this.active?.openRangeId !== markerId) {
+          throw new Error('A range needs an end')
+        }
         const limit = session.recording?.durationMs || Number.MAX_SAFE_INTEGER
         const timeMs = Math.round(Math.min(limit, Math.max(0, times.timeMs ?? marker.timeMs)))
         let endMs = times.endMs === undefined ? marker.endMs : times.endMs
@@ -300,6 +310,7 @@ export class Controller {
       markerSettings: settings.markers,
       companionSettings: settings.companion,
       sessionsDir: settings.sessionsDir,
+      sessionsDirWarning: sessionsDirWarning(settings.sessionsDir),
       hiddenWindowsError: null,
       hiddenWindowsFound: [],
       microphoneError: null,
@@ -352,7 +363,8 @@ export class Controller {
               }),
             (error: unknown) => console.error(error)
           ),
-        onWarning: (message) => this.warn(message)
+        onWarning: (message) => this.warn(message),
+        onPauseChanged: () => this.publishRecording()
       },
       {
         get: () => getSettings().obsPreviousWorkspace,
@@ -438,7 +450,7 @@ export class Controller {
   }
 
   isRecording(): boolean {
-    return this.active !== null
+    return this.active !== null || this.starting !== null
   }
 
   /** See the constructor: the main window is capturable only while a review is open. */
@@ -452,7 +464,10 @@ export class Controller {
 
   /** Each step runs even if an earlier one fails, so OBS still gets the trainer's profile back. */
   async shutdown(): Promise<void> {
+    this.shuttingDown = true
     this.cancelReconnect()
+    // A recording starting right now is stopped once it has started, not left running in OBS.
+    await this.starting?.catch(() => undefined)
     if (this.displayTimer) clearTimeout(this.displayTimer)
     this.hotkeys.stop()
     await this.stopSession().catch((error: unknown) => console.error('Could not stop the recording', error))
@@ -484,6 +499,7 @@ export class Controller {
     })
     handle('obs:connect', async (config: ObsConnectionConfig) => {
       this.refuseWhileRecording()
+      if (this.connecting) throw new Error('Already connecting to OBS: wait a moment')
       const current = getSettings().obs
       await updateSettings({
         obs: {
@@ -585,6 +601,24 @@ export class Controller {
       // Push-to-talk buttons work during a recording or a review only.
       if (!this.active) for (const target of [...this.pttHolds.keys()]) this.releasePtt(target, FROM_APP)
       this.patch({ review: null })
+    })
+    // A recording picked up after a crash has no duration: the player tells it from the video itself.
+    handle('review:duration', async (folderName: string, durationMs: number) => {
+      const review = this.state.review
+      if (!review || review.folderName !== folderName || review.durationMs > 0) return
+      if (!Number.isFinite(durationMs) || durationMs <= 0 || durationMs > 48 * 3_600_000) return
+      const length = Math.round(durationMs)
+      const session = await this.store.update(this.sessionFolder(folderName), (current) => {
+        if (current.recording && !current.recording.durationMs) current.recording.durationMs = length
+        // Ranges left open by the crash end with the recording.
+        for (const marker of current.markers) {
+          if (marker.kind === 'range' && marker.endMs === null) marker.endMs = Math.max(marker.timeMs, length)
+        }
+      })
+      if (this.state.review?.folderName === folderName) {
+        this.patch({ review: { ...this.state.review, durationMs: length, markers: structuredClone(session.markers) } })
+      }
+      this.broadcast('sessions:changed', null)
     })
     handle('player:report', (player: PlayerState) => {
       const review = this.state.review
@@ -689,7 +723,18 @@ export class Controller {
     this.reconnectTimer = null
   }
 
-  private async connectObs(): Promise<void> {
+  /** One connection attempt at a time (two would close each other's socket); a second request joins it. */
+  private connecting: Promise<void> | null = null
+
+  private connectObs(): Promise<void> {
+    this.connecting ??= this.doConnectObs().finally(() => {
+      this.connecting = null
+    })
+    return this.connecting
+  }
+
+  private async doConnectObs(): Promise<void> {
+    if (this.shuttingDown) throw new Error('The app is closing')
     this.cancelReconnect()
     await this.recorder.disconnect().catch(() => undefined)
     this.patch({ obs: { status: 'connecting', error: null, version: null } })
@@ -746,11 +791,22 @@ export class Controller {
 
   // --- Sessions ------------------------------------------------------------------
 
-  private async startSession(metadata: SessionMetadata, consent: boolean): Promise<void> {
+  private startSession(metadata: SessionMetadata, consent: boolean): Promise<void> {
+    if (this.starting) return Promise.reject(new Error('The recording is starting'))
+    // Counted as recording from now: quitting asks first, and waits for the start to stop it.
+    this.starting = this.doStartSession(metadata, consent).finally(() => {
+      this.starting = null
+    })
+    return this.starting
+  }
+
+  private async doStartSession(metadata: SessionMetadata, consent: boolean): Promise<void> {
+    if (this.shuttingDown) throw new Error('The app is closing')
     if (this.active || this.ending) throw new Error('A session is already being recorded')
+    if (getSettings().termsAccepted?.version !== TERMS_VERSION) throw new Error('Accept the terms of use first')
     // IVAO Rule 2.1.12: no recording of a voice conversation without its participants' consent.
     if (consent !== true) throw new Error('Confirm that everyone in the voice call agreed to be recorded')
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(metadata?.date ?? ''))) throw new Error('Enter the date of the session')
+    metadata = validMetadata(metadata)
     const recorder = this.requireObs()
     let capture = this.state.capture
     if (!capture.display) throw new Error('Choose the display to record in Setup first')
@@ -768,7 +824,11 @@ export class Controller {
       // Private windows covered before the first frame. A problem is shown (and heard) but doesn't stop the session.
       await this.windowMasks.refreshNow().catch(() => undefined)
       const { folder, session } = await createSession(getSettings().sessionsDir, metadata)
-      session.consent = { statement: RECORDING_CONSENT, confirmedAt: new Date().toISOString() }
+      session.consent = {
+        statement: RECORDING_CONSENT,
+        confirmedAt: new Date().toISOString(),
+        termsVersion: TERMS_VERSION
+      }
       try {
         await recorder.start(folder)
       } catch (error) {
@@ -991,7 +1051,7 @@ export class Controller {
     const chosen = result.filePaths[0]
     if (result.canceled || !chosen) return
     await updateSettings({ sessionsDir: chosen })
-    this.patch({ sessionsDir: chosen })
+    this.patch({ sessionsDir: chosen, sessionsDirWarning: sessionsDirWarning(chosen) })
     this.broadcast('sessions:changed', null)
     void this.resumeTranscriptions()
   }
@@ -1010,7 +1070,7 @@ export class Controller {
     } catch (error) {
       console.error('Could not delete the session', error)
       throw new Error(
-        'Could not move the session to the Recycle Bin. Close any program using its files and try again. On a network drive there is no Recycle Bin: delete the folder from File Explorer instead.'
+        'Windows could not move the session to the Recycle Bin. A program may be using its files (close it and try again), the drive may have no Recycle Bin (network or some USB drives), or the recording may be too big for it. You can delete the folder from File Explorer instead (Open the session folder).'
       )
     }
     this.broadcast('sessions:changed', null)
@@ -1051,6 +1111,18 @@ export class Controller {
     } catch (error) {
       console.error('Could not save the session details', error)
       if (error instanceof SessionRenameError) target = error.folder
+      if (session && target !== folder) {
+        // The session folder has its new name already: the dialog must not keep the old one.
+        this.patch({
+          notice: {
+            kind: 'warning',
+            title: 'Details saved, screenshots folder not renamed',
+            message:
+              'Close any program using the session’s screenshots (File Explorer, an image viewer), then save the details again to rename it.'
+          }
+        })
+        return basename(target)
+      }
       throw new Error(
         session
           ? 'The details are saved, but the folder could not be renamed. Close any program using its files (e.g. File Explorer or a video player) and save again.'
@@ -1091,7 +1163,8 @@ export class Controller {
         markers: active.session.markers.map((marker) => ({ ...marker })),
         openRangeId: active.openRangeId,
         dictatingMarkerId: this.dictation?.markerId ?? null,
-        warnings: [...active.warnings]
+        warnings: [...active.warnings],
+        paused: this.recorder.isPaused()
       }
     })
   }
@@ -1234,10 +1307,9 @@ export class Controller {
       (file): file is string => !!file
     )
     // An accidental push-to-talk tap (force) leaves nothing worth keeping in the Recycle Bin.
-    for (const file of files) {
-      if (force) await unlink(join(folder, file)).catch(() => undefined)
-      else await this.discard(join(folder, file))
-    }
+    if (force) {
+      for (const file of files) await unlink(join(folder, file)).catch(() => undefined)
+    } else await this.discard(files.map((file) => join(folder, file)))
   }
 
   // --- Voice notes -----------------------------------------------------------------
@@ -1455,12 +1527,26 @@ export class Controller {
       marker.notes = marker.notes.filter((item) => item.id !== noteId)
       return found
     })
-    await this.discard(join(this.sessionFolder(folderName), note.audio))
+    await this.discard([join(this.sessionFolder(folderName), note.audio)])
   }
 
-  /** Files of deleted markers and notes go to the Recycle Bin, so a mistake can be undone from Windows. */
-  private async discard(file: string): Promise<void> {
-    await shell.trashItem(file).catch(() => undefined) // no Recycle Bin (e.g. network drive): the file stays
+  /**
+   * Files of deleted markers and notes go to the Recycle Bin, so a mistake can
+   * be undone from Windows. Where there is none (a network drive), the files
+   * stay: the trainer is told, since they may hold a voice or a private window.
+   */
+  private async discard(files: string[]): Promise<void> {
+    const left: string[] = []
+    for (const file of files) {
+      await shell.trashItem(file).catch(() => {
+        if (existsSync(file)) left.push(basename(file))
+      })
+    }
+    if (left.length) {
+      throw new Error(
+        `Deleted, but Windows kept its ${left.length === 1 ? 'file' : 'files'} (${left.join(', ')}): no Recycle Bin on this drive, or in use. Delete ${left.length === 1 ? 'it' : 'them'} from the session folder if needed.`
+      )
+    }
   }
 
   // --- Session edits, review and Companion -------------------------------------------
@@ -1503,7 +1589,10 @@ export class Controller {
   /** Full path of a session folder given its name, refusing anything outside the sessions folder. */
   private sessionFolder(folderName: string): string {
     const folder = typeof folderName === 'string' ? sessionFilePath([folderName]) : null
-    if (!folder || folderName.includes('/') || folderName.includes('\\')) throw new Error('Unknown session')
+    // Windows drops trailing dots and spaces: "..." or " " would be the sessions folder itself.
+    if (!folder || /[\\/:]|[. ]$/.test(folderName) || !existsSync(join(folder, 'session.json'))) {
+      throw new Error('Unknown session')
+    }
     return folder
   }
 
@@ -1678,9 +1767,14 @@ export class Controller {
   /** Transcribes notes left over from a previous run (app closed mid-queue) and recovers orphaned recordings. */
   private async resumeTranscriptions(): Promise<void> {
     for (const summary of await listSessions(getSettings().sessionsDir)) {
-      await this.recoverRecording(summary.folder).catch(() => undefined)
-      const session = await loadSession(summary.folder).catch(() => null)
-      if (session) await this.transcriber.resume(summary.folder, session)
+      // One odd session must not stop the others from being picked up.
+      try {
+        await this.recoverRecording(summary.folder).catch(() => undefined)
+        const session = await loadSession(summary.folder).catch(() => null)
+        if (session) await this.transcriber.resume(summary.folder, session)
+      } catch (error) {
+        console.error(`Session ${summary.folderName} not resumed`, error)
+      }
     }
   }
 
@@ -1689,6 +1783,7 @@ export class Controller {
       installedModels: this.transcriber.installedModels(),
       download: this.transcriber.currentDownload(),
       downloadError: this.transcriber.downloadError,
+      error: this.transcriber.lastError,
       queued: this.transcriber.queued(),
       available: this.transcriber.available()
     }
@@ -1735,12 +1830,15 @@ export class Controller {
     }
   }
 
+  /** Busy while any of these runs: the first one to finish must not say "done" for the others. */
+  private busyCount = 0
+
   private async withBusy<T>(fn: () => Promise<T>): Promise<T> {
-    this.patch({ busy: true })
+    if (this.busyCount++ === 0) this.patch({ busy: true })
     try {
       return await fn()
     } finally {
-      this.patch({ busy: false })
+      if (--this.busyCount === 0) this.patch({ busy: false })
     }
   }
 
@@ -1760,6 +1858,47 @@ export class Controller {
       if (!window.isDestroyed()) window.webContents.send(channel, payload)
     }
   }
+}
+
+/**
+ * Why a sessions folder puts the recordings at risk, if it does: synchronised
+ * with OneDrive (recordings with other people's voices uploaded to the cloud),
+ * or outside the user's folder (other accounts on the PC may open it).
+ */
+function sessionsDirWarning(dir: string): string | null {
+  const inside = (parent: string | undefined): boolean =>
+    Boolean(parent) &&
+    resolve(dir)
+      .toLowerCase()
+      .startsWith(resolve(parent!).toLowerCase() + sep)
+  if ([process.env.OneDrive, process.env.OneDriveConsumer, process.env.OneDriveCommercial].some(inside)) {
+    return 'This folder is synchronised with OneDrive: the recordings (with the voices of everyone in the call), notes and screenshots are uploaded to the cloud. Choose a folder outside OneDrive.'
+  }
+  if (!inside(homedir())) {
+    return 'This folder is outside your user folder: other accounts on this PC may be able to open the recordings.'
+  }
+  return null
+}
+
+/** The New session details as the app expects them (the form checks them too, but a page can't be trusted). */
+function validMetadata(metadata: SessionMetadata): SessionMetadata {
+  const text = (value: unknown, max: number): string =>
+    String(value ?? '')
+      .trim()
+      .slice(0, max)
+  const clean: SessionMetadata = {
+    traineeVid: text(metadata?.traineeVid, 20),
+    traineeName: text(metadata?.traineeName, 100),
+    position: text(metadata?.position, 30).toUpperCase(),
+    trainingType: text(metadata?.trainingType, 40) || 'Training',
+    trainerVid: text(metadata?.trainerVid, 20),
+    date: text(metadata?.date, 10)
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean.date)) throw new Error('Enter the date of the session')
+  if (!/^\d+$/.test(clean.traineeVid)) throw new Error('The trainee VID must be a number')
+  if (!/^\d*$/.test(clean.trainerVid)) throw new Error('Your VID must be a number')
+  if (!clean.position) throw new Error('The position is required')
+  return clean
 }
 
 function sameDisplay(a: DisplayOption, b: DisplayOption): boolean {
@@ -1793,7 +1932,8 @@ function describeObsError(error: unknown): string {
       ? 'OBS requires a password: paste the one shown in OBS (Tools → WebSocket Server Settings → Show Connect Info).'
       : 'OBS rejected the password. Paste it again from OBS (Tools → WebSocket Server Settings → Show Connect Info).'
   }
-  if (/ECONNREFUSED|connect|socket|closed/i.test(message) && !/too old/.test(message)) {
+  // Only a connection that failed: OBS's own answers ("…Stop it in OBS, then connect again.") are kept as they are.
+  if (/ECONNREFUSED|ECONNRESET|socket hang up|OBS did not answer|connection (closed|refused)/i.test(message)) {
     return 'Cannot reach OBS. Make sure OBS is running and the WebSocket server is enabled (Tools → WebSocket Server Settings).'
   }
   return message

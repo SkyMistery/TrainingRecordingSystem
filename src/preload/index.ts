@@ -94,6 +94,8 @@ const api = {
   openReview: (folderName: string) => invoke<void>('review:open', folderName),
   closeReview: () => invoke<void>('review:close'),
   reportPlayer: (player: PlayerState) => invoke<void>('player:report', player),
+  /** The video's length, for a session recovered after a crash (it has none saved). */
+  reportDuration: (folderName: string, durationMs: number) => invoke<void>('review:duration', folderName, durationMs),
   onPlayerCommand: (listener: (command: PlayerCommand) => void) => subscribe('player:command', listener),
 
   saveCompanionSettings: (settings: Partial<CompanionSettings>) => invoke<void>('companion:save', settings),
@@ -104,6 +106,8 @@ const api = {
   releasePtt: (target: PttTarget) => invoke<void>('companion:releasePtt', target),
   refreshCompanion: () => invoke<void>('companion:refresh'),
   openNotesWindow: () => invoke<void>('companion:openWindow'),
+  /** Downloads the update the trainer agreed to. */
+  downloadUpdate: () => invoke<void>('update:download'),
   installUpdate: () => invoke<void>('update:install'),
   openCompanionInBrowser: () => invoke<void>('companion:openBrowser'),
 

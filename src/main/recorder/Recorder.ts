@@ -36,6 +36,8 @@ export interface Recorder {
   /** Stops recording once the file is complete, and returns its path. */
   stop(): Promise<string | null>
   isRecording(): boolean
+  /** Paused in OBS (by the trainer): the recording doesn't advance. */
+  isPaused(): boolean
   /** Current position in the recording, in milliseconds. */
   currentTimeMs(): number
   /** Saves a full-resolution screenshot of the recorded scene (masks included). */
@@ -63,4 +65,6 @@ export interface RecorderEvents {
   onRecordingStopped(filePath: string | null, durationMs: number): void
   /** Something went wrong with the recording but it goes on (shown to the trainer). */
   onWarning(message: string): void
+  /** The recording was paused or resumed in OBS. */
+  onPauseChanged(): void
 }

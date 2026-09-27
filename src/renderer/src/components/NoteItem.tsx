@@ -40,12 +40,15 @@ export function NoteItem({
   const [editing, setEditing] = useState(false)
   const text = note.text ?? note.transcript ?? ''
   const [draft, setDraft] = useState(text)
-  useEffect(() => setDraft(text), [text])
+  // Not while typing: a transcription arriving (or another device editing) must not replace what is being written.
+  useEffect(() => {
+    if (!editing) setDraft(text)
+  }, [text, editing])
 
   const toggle = (): void => {
     const element = audio.current
     if (!element) return
-    if (element.paused) void element.play()
+    if (element.paused) element.play().catch(() => setPlaying(false))
     else element.pause()
   }
 

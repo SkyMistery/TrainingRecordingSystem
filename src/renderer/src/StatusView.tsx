@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { MarkerFeedback } from '@shared/types'
+import { recordingTime } from '@shared/markers'
 import { formatDuration } from './format'
 import { useAppState, useNow } from './hooks'
 import { markerColors, paint, markerTimeLabel } from './components/MarkerList'
@@ -62,7 +63,7 @@ export function StatusView(): React.JSX.Element {
       <div className="flex items-center gap-3">
         <span className="size-3 animate-pulse rounded-full bg-semantic-red-500" aria-hidden />
         <span className="font-mono text-2xl font-medium tabular-nums">
-          {formatDuration(recording.elapsedMs + (now - recording.sampledAt))}
+          {formatDuration(recordingTime(recording, now))}
         </span>
         <span className="ml-auto text-right text-sm leading-tight text-muted-foreground">
           {recording.markers.length} marker{recording.markers.length === 1 ? '' : 's'}

@@ -41,6 +41,8 @@ export function Timeline(props: TimelineProps): React.JSX.Element {
         aria-valuetext={formatDuration(props.positionMs)}
         className="relative h-14 cursor-pointer"
         onPointerDown={(event) => {
+          // Only the main button seeks (a right-click is not a jump).
+          if (event.button !== 0) return
           event.currentTarget.setPointerCapture(event.pointerId)
           props.onSeek(timeAt(event.clientX))
         }}
@@ -79,7 +81,7 @@ export function Timeline(props: TimelineProps): React.JSX.Element {
                 aria-label={`Go to marker ${marker.number}`}
                 onPointerDown={(event) => {
                   event.stopPropagation()
-                  props.onSeek(marker.timeMs)
+                  if (event.button === 0) props.onSeek(marker.timeMs)
                 }}
               >
                 <span

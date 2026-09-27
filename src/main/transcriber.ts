@@ -2,16 +2,16 @@ import { spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { createWriteStream, existsSync } from 'node:fs'
 import { copyFile, mkdir, readdir, rename, rm } from 'node:fs/promises'
-import { availableParallelism } from 'node:os'
+import { availableParallelism, constants as osConstants, setPriority } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { app } from 'electron'
+import { app, net } from 'electron'
 import { WHISPER_MODELS } from '../shared/whisper'
 import type { ModelDownload, Note, SessionFile, WhisperModelId } from '../shared/types'
 import type { SessionStore } from './sessions'
 import { getSettings } from './settings'
-import { buildPrompt, echoesPrompt, isSilent } from './transcriptHints'
+import { buildPrompt, cleanTranscript, isSilent } from './transcriptHints'
 
 /** A fixed revision of the model repository, so the files match the digests below. */
 const MODEL_REVISION = '5359861c739e955e79d9a303bcbc70fb988958b1'
@@ -28,9 +28,17 @@ const MODEL_FILES: Record<WhisperModelId, { bytes: number; sha256: string }> = {
   }
 }
 
-const TIMEOUT_MS = 5 * 60_000
+/**
+ * The longest whisper may take for a note: a few minutes, plus ten times the
+ * note's length (Large v3 Turbo on an old CPU, while OBS encodes).
+ */
+const timeoutFor = (durationMs: number): number => 3 * 60_000 + 10 * durationMs
+/** A download that receives nothing for this long has stalled. */
+const STALL_MS = 60_000
 /** Name of the temporary note copies whisper reads (see runWhisper). */
 const TEMP_PREFIX = 'note-'
+/** Windows' exit code for a program missing a DLL (here: the Visual C++ runtime). */
+const DLL_NOT_FOUND = 0xc0000135
 
 interface Job {
   folder: string
@@ -44,21 +52,15 @@ export interface TranscriberEvents {
   stateChanged: () => void
 }
 
+/** A transcription problem the trainer can fix (shown in Setup → Voice notes). */
+class TranscriberError extends Error {}
+
 function findNote(session: SessionFile, noteId: string): Note | undefined {
   for (const marker of session.markers) {
     const note = marker.notes.find((item) => item.id === noteId)
     if (note) return note
   }
   return undefined
-}
-
-/** Whisper marks silence and noises with tokens like [BLANK_AUDIO] or (wind blowing). */
-function cleanTranscript(output: string, prompt: string): string {
-  const text = output
-    .replace(/\[[^\]]*\]|\([^)]*\)/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  return echoesPrompt(text, prompt) ? '' : text
 }
 
 /**
@@ -73,6 +75,8 @@ export class Transcriber {
   private download: ModelDownload | null = null
   private downloadAbort: AbortController | null = null
   downloadError: string | null = null
+  /** Why the last transcription failed, when it is something the trainer can fix. */
+  lastError: string | null = null
 
   constructor(
     private readonly store: SessionStore,
@@ -113,7 +117,8 @@ export class Transcriber {
   }
 
   enqueue(folder: string, noteId: string): void {
-    if (this.queue.some((job) => job.noteId === noteId)) return
+    // A copied session has the same note ids: the folder tells them apart.
+    if (this.queue.some((job) => job.noteId === noteId && job.folder === folder)) return
     this.queue.push({ folder, noteId })
     this.events.stateChanged()
     void this.process()
@@ -146,19 +151,25 @@ export class Transcriber {
     if (this.download) throw new Error('A model is already being downloaded')
     const target = Transcriber.modelPath(model)
     const partial = `${target}.part`
-    this.downloadAbort = new AbortController()
+    const abort = new AbortController()
+    this.downloadAbort = abort
     this.download = { model, receivedBytes: 0, totalBytes: 0 }
     this.downloadError = null
     this.events.stateChanged()
+    const stalled = (): void => abort.abort(new Error('The download stalled: check the connection and try again'))
+    let stall = setTimeout(stalled, STALL_MS)
     try {
       await mkdir(Transcriber.modelsDir(), { recursive: true })
-      const response = await fetch(MODEL_URL(model), { signal: this.downloadAbort.signal })
+      // Electron's fetch: it goes through the system proxy, as a browser would.
+      const response = await net.fetch(MODEL_URL(model), { signal: abort.signal })
       if (!response.ok || !response.body) throw new Error(`Download failed (HTTP ${response.status})`)
       this.download.totalBytes = Number(response.headers.get('content-length') ?? 0)
       let lastUpdate = 0
       const hash = createHash('sha256')
       const body = Readable.fromWeb(response.body as import('node:stream/web').ReadableStream)
       body.on('data', (chunk: Buffer) => {
+        clearTimeout(stall)
+        stall = setTimeout(stalled, STALL_MS)
         hash.update(chunk)
         if (!this.download) return
         this.download.receivedBytes += chunk.length
@@ -175,13 +186,18 @@ export class Transcriber {
       await rename(partial, target)
     } catch (error) {
       await rm(partial, { force: true }).catch(() => undefined)
-      this.downloadError = this.downloadAbort?.signal.aborted
-        ? null
-        : error instanceof Error
-          ? error.message
-          : String(error)
+      const reason: unknown = abort.signal.reason
+      this.downloadError =
+        reason instanceof Error && reason.message.startsWith('The download stalled')
+          ? reason.message
+          : abort.signal.aborted
+            ? null // cancelled by the trainer
+            : error instanceof Error
+              ? error.message
+              : String(error)
       throw error
     } finally {
+      clearTimeout(stall)
       this.download = null
       this.downloadAbort = null
       this.events.stateChanged()
@@ -210,32 +226,58 @@ export class Transcriber {
         const job = this.queue.shift()!
         this.events.stateChanged()
         const { model, language, transcribe, vocabulary } = getSettings().notes
+        // A session deleted or moved outside the app meanwhile: nothing left to transcribe.
+        if (!existsSync(join(job.folder, 'session.json'))) continue
         if (!transcribe || !this.available()) {
           await this.setStatus(job.folder, job.noteId, { status: 'pending' }).catch(() => undefined)
           continue
         }
         if (!existsSync(Transcriber.modelPath(model))) {
-          await this.setStatus(job.folder, job.noteId, { status: 'no-model' }).catch(() => undefined)
+          const waiting = await this.store
+            .read(job.folder)
+            .then((session) => findNote(session, job.noteId)?.status === 'no-model')
+            .catch(() => false)
+          // Written once: every new note would otherwise rewrite every session waiting for the model.
+          if (!waiting) await this.setStatus(job.folder, job.noteId, { status: 'no-model' }).catch(() => undefined)
           deferred.push(job)
           continue
         }
         this.currentFolder = job.folder
         try {
+          const before = findNote(await this.store.read(job.folder), job.noteId)
+          if (!before) continue
           await this.setStatus(job.folder, job.noteId, { status: 'transcribing' })
-          const session = await this.store.update(job.folder, () => undefined)
-          const note = findNote(session, job.noteId)
-          if (!note) continue
-          const transcript = await this.runWhisper(join(job.folder, note.audio), model, language, vocabulary)
-          await this.setStatus(job.folder, job.noteId, { status: 'done', transcript })
+          const transcript = await this.runWhisper(
+            join(job.folder, before.audio),
+            before.durationMs,
+            model,
+            language,
+            vocabulary
+          )
+          // Transcribing again never trades a transcript for an empty one (a worse model, the wrong language).
+          const kept = transcript === '' && before.transcript ? before.transcript : transcript
+          await this.setStatus(job.folder, job.noteId, { status: 'done', transcript: kept })
+          if (this.lastError) {
+            this.lastError = null
+            this.events.stateChanged()
+          }
         } catch (error) {
           console.error('Transcription failed', error)
+          if (error instanceof TranscriberError) {
+            this.lastError = error.message
+            this.events.stateChanged()
+          }
           await this.setStatus(job.folder, job.noteId, { status: 'failed' }).catch(() => undefined)
         } finally {
           this.currentFolder = null
         }
       }
       // Waiting for a model: they run as soon as it is downloaded.
-      this.queue.push(...deferred.filter((job) => !this.queue.some((queued) => queued.noteId === job.noteId)))
+      this.queue.push(
+        ...deferred.filter(
+          (job) => !this.queue.some((queued) => queued.noteId === job.noteId && queued.folder === job.folder)
+        )
+      )
     } finally {
       this.running = false
       this.events.stateChanged()
@@ -252,6 +294,7 @@ export class Transcriber {
    */
   private async runWhisper(
     wavPath: string,
+    durationMs: number,
     model: WhisperModelId,
     language: string,
     vocabulary: string
@@ -259,20 +302,40 @@ export class Transcriber {
     // Whisper makes words up on silence ("Grazie a tutti", "Thank you").
     if (await isSilent(wavPath).catch(() => false)) return ''
     const dir = Transcriber.modelsDir()
+    await this.removeForeignLibraries(dir)
     const copy = `${TEMP_PREFIX}${randomBytes(4).toString('hex')}.wav`
     await copyFile(wavPath, join(dir, copy))
     try {
-      return await this.spawnWhisper(dir, `ggml-${model}.bin`, copy, language, buildPrompt(language, vocabulary))
+      return await this.spawnWhisper(
+        dir,
+        `ggml-${model}.bin`,
+        copy,
+        language,
+        buildPrompt(language, vocabulary),
+        timeoutFor(durationMs)
+      )
     } finally {
       await rm(join(dir, copy), { force: true }).catch(() => undefined)
     }
   }
 
-  /** Temporary copies left behind by a crash. */
+  /** Temporary copies and unfinished downloads left behind by a crash. */
   private async removeTemporaryCopies(): Promise<void> {
     const names = await readdir(Transcriber.modelsDir()).catch(() => [] as string[])
-    for (const name of names.filter((item) => item.startsWith(TEMP_PREFIX))) {
+    for (const name of names.filter((item) => item.startsWith(TEMP_PREFIX) || item.endsWith('.part'))) {
       await rm(join(Transcriber.modelsDir(), name), { force: true }).catch(() => undefined)
+    }
+  }
+
+  /**
+   * whisper runs in the models folder (see runWhisper), and its library loads
+   * every "ggml-*.dll" it finds there too: nothing but models may be in it.
+   */
+  private async removeForeignLibraries(dir: string): Promise<void> {
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      if (!/\.dll$/i.test(name)) continue
+      console.warn(`Removed ${name} from the models folder: whisper would load it`)
+      await rm(join(dir, name), { force: true }).catch(() => undefined)
     }
   }
 
@@ -281,22 +344,42 @@ export class Transcriber {
     modelFile: string,
     wavFile: string,
     language: string,
-    prompt: string
+    prompt: string,
+    timeoutMs: number
   ): Promise<string> {
     const threads = String(Math.max(1, Math.min(4, availableParallelism() - 1)))
     const args = ['-m', modelFile, '-f', wavFile, '-l', language, '-nt', '-np', '-t', threads, '--prompt', prompt]
+    // No inherited GGML_* (GGML_BACKEND_PATH would make it load libraries from there).
+    const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GGML_/i.test(name)))
     return new Promise((resolve, reject) => {
-      const child = spawn(Transcriber.binaryPath(), args, { windowsHide: true, cwd })
+      const child = spawn(Transcriber.binaryPath(), args, { windowsHide: true, cwd, env })
+      // Below OBS and Aurora: a note transcribed during a recording must not cost frames.
+      if (child.pid) {
+        try {
+          setPriority(child.pid, osConstants.priority.PRIORITY_BELOW_NORMAL)
+        } catch {
+          // Normal priority then.
+        }
+      }
       const output: Buffer[] = []
       const errors: Buffer[] = []
-      const timer = setTimeout(() => child.kill(), TIMEOUT_MS)
+      const timer = setTimeout(() => child.kill(), timeoutMs)
       child.stdout.on('data', (chunk: Buffer) => output.push(chunk))
       child.stderr.on('data', (chunk: Buffer) => errors.push(chunk))
-      child.on('error', reject)
+      child.on('error', (error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
       child.on('close', (code) => {
         clearTimeout(timer)
         if (code === 0) resolve(cleanTranscript(Buffer.concat(output).toString('utf8'), prompt))
-        else reject(new Error(`whisper exited with ${code}: ${Buffer.concat(errors).toString('utf8').slice(-500)}`))
+        else if (code !== null && code >>> 0 === DLL_NOT_FOUND) {
+          reject(
+            new TranscriberError(
+              'Transcription can’t start: the Microsoft Visual C++ Redistributable (x64) is missing on this PC. Install it from Microsoft’s website, then use “Transcribe again”.'
+            )
+          )
+        } else reject(new Error(`whisper exited with ${code}: ${Buffer.concat(errors).toString('utf8').slice(-500)}`))
       })
     })
   }

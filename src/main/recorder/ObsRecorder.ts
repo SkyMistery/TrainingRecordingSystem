@@ -206,10 +206,12 @@ export class ObsRecorder implements Recorder {
           // Paused in OBS: the recording (and so marker times) doesn't advance.
           this.clock = { durationMs: this.currentTimeMs(), sampledAt: Date.now() }
           this.paused = true
+          this.events.onPauseChanged()
           break
         case 'OBS_WEBSOCKET_OUTPUT_RESUMED':
           this.clock = { durationMs: this.clock.durationMs, sampledAt: Date.now() }
           this.paused = false
+          this.events.onPauseChanged()
           break
         case 'OBS_WEBSOCKET_OUTPUT_STOPPED': {
           for (const waiter of this.stateWaiters) waiter(outputState, outputPath ?? null)
@@ -464,6 +466,10 @@ export class ObsRecorder implements Recorder {
 
   isRecording(): boolean {
     return this.recording
+  }
+
+  isPaused(): boolean {
+    return this.recording && this.paused
   }
 
   currentTimeMs(): number {

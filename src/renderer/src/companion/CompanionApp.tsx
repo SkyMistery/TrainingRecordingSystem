@@ -15,7 +15,7 @@ import {
   Sun,
   TowerControl
 } from 'lucide-react'
-import { byTime, currentMarker, livePosition } from '@shared/markers'
+import { byTime, currentMarker, livePosition, recordingTime } from '@shared/markers'
 import type { CompanionState, Marker, PlayerCommand, PttTarget, RecordingState, ReviewState } from '@shared/types'
 import type { SendCommand } from '../commands'
 import {
@@ -208,9 +208,7 @@ function RecordingView({
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-3">
         <span className="size-3 animate-pulse rounded-full bg-semantic-red-500" aria-hidden />
-        <span className="font-mono text-3xl tabular-nums">
-          {formatDuration(recording.elapsedMs + (now - recording.sampledAt))}
-        </span>
+        <span className="font-mono text-3xl tabular-nums">{formatDuration(recordingTime(recording, now))}</span>
         <span className="text-sm text-muted-foreground">
           <span className="font-mono">{recording.metadata.position}</span> · trainee {recording.metadata.traineeVid}
         </span>

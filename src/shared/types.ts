@@ -207,6 +207,8 @@ export interface TranscriptionState {
   installedModels: WhisperModelId[]
   download: ModelDownload | null
   downloadError: string | null
+  /** Why transcriptions fail, when the trainer can fix it (e.g. a runtime missing on this PC). */
+  error: string | null
   /** Notes waiting for or being transcribed. */
   queued: number
   /** False when the whisper program is missing from the installation. */
@@ -221,7 +223,7 @@ export interface SessionFile {
   recording: RecordingInfo | null
   markers: Marker[]
   /** The trainer's confirmation that everyone in the voice call agreed to be recorded (v1.3+). */
-  consent?: { statement: string; confirmedAt: string }
+  consent?: { statement: string; confirmedAt: string; termsVersion?: number }
 }
 
 /** Session details the trainer can correct after recording (typos); they also name the folder. */
@@ -252,6 +254,8 @@ export interface RecordingState {
   dictatingMarkerId: string | null
   /** Problems met during this recording (a note not muted in OBS, a save that failed…), newest last. */
   warnings: string[]
+  /** Paused in OBS: the recording (and its clock) doesn't advance. */
+  paused: boolean
 }
 
 /** Something the trainer must see whatever page is open, until dismissed. */
@@ -265,8 +269,11 @@ export interface AppNotice {
 
 /** A newer version of the app found on GitHub Releases. */
 export interface UpdateState {
-  /** "error": the download stopped; the next check tries again. */
-  status: 'downloading' | 'ready' | 'error'
+  /**
+   * available: found, not downloaded (the trainer decides); error: the download
+   * stopped (the button tries again); ready: downloaded, installed on "Restart to update".
+   */
+  status: 'available' | 'downloading' | 'ready' | 'error'
   version: string
   percent: number
 }
@@ -283,6 +290,8 @@ export interface AppState {
   companionSettings: CompanionSettings
   /** Where new sessions are saved and the sessions list is read from. */
   sessionsDir: string
+  /** Why that folder is a risk for the recordings (cloud sync, other accounts), if it is. */
+  sessionsDirWarning: string | null
   /** Why hidden windows can't be covered right now, if anything. */
   hiddenWindowsError: string | null
   /** Hidden-window rules with a matching window open on screen right now (rule ids). */

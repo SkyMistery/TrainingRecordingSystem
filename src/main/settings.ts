@@ -168,7 +168,9 @@ export function decryptSecret(encrypted: string | null): string | undefined {
   if (!encrypted) return undefined
   try {
     return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
-  } catch {
+  } catch (error) {
+    // Another Windows user, or the key lost with the app's data: the password must be entered again.
+    console.error('The saved OBS password could not be decrypted', error)
     return undefined
   }
 }
