@@ -21,6 +21,8 @@ interface Capture {
 let capture: Capture | null = null
 let ring: Float32Array[] = []
 let collecting: Float32Array[] | null = null
+/** Samples of the pre-roll at the start of the note being collected: not part of its length. */
+let preRollSamples = 0
 /**
  * Bumped by every open and close. Opening waits for Windows; if the session
  * ended (or a new open started) meanwhile, the late stream is dropped instead
@@ -34,8 +36,9 @@ function ringSamples(): number {
   return ring.reduce((sum, chunk) => sum + chunk.length, 0)
 }
 
-async function open(deviceId: string, label: string): Promise<void> {
-  close()
+/** `keepNote`: the microphone is reopened in the middle of a note (unplugged): what was dictated stays. */
+async function open(deviceId: string, label: string, keepNote = false): Promise<void> {
+  close(keepNote)
   wanted = { deviceId, label }
   const current = generation
   const { stream, fallback } = await openMicrophone(deviceId, label, {
@@ -56,7 +59,7 @@ async function open(deviceId: string, label: string): Promise<void> {
     if (current !== generation || !wanted) return
     void window.api.reportAudioStatus(`The microphone “${label}” was disconnected: reconnecting…`)
     const { deviceId: id, label: name } = wanted
-    open(id, name).catch((error: unknown) => void window.api.reportAudioStatus(describeMediaError(error)))
+    open(id, name, true).catch((error: unknown) => void window.api.reportAudioStatus(describeMediaError(error)))
   })
   // The context resamples the microphone to 16 kHz for us.
   const context = new AudioContext({ sampleRate: SAMPLE_RATE })
@@ -76,7 +79,7 @@ async function open(deviceId: string, label: string): Promise<void> {
   capture = { stream, context, processor }
 }
 
-function close(): void {
+function close(keepNote = false): void {
   generation++
   if (!capture) return
   capture.processor.disconnect()
@@ -84,10 +87,11 @@ function close(): void {
   void capture.context.close()
   capture = null
   ring = []
-  collecting = null
+  if (!keepNote) collecting = null
 }
 
 function start(): void {
+  preRollSamples = ringSamples()
   collecting = [...ring]
   ring = []
 }
@@ -99,7 +103,9 @@ async function stop(token: string): Promise<void> {
   if (collecting === chunks) collecting = null
   const samples = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
   const durationMs = (samples / SAMPLE_RATE) * 1000
-  if (!capture || durationMs < PRE_ROLL_MS + MIN_NOTE_MS + TAIL_MS) {
+  // Measured from the key press: the pre-roll may be shorter (a note right after another) or longer.
+  const heldMs = ((samples - preRollSamples) / SAMPLE_RATE) * 1000
+  if (samples === 0 || heldMs < MIN_NOTE_MS + TAIL_MS) {
     await window.api.sendNoteAudio(token, null)
     return
   }
@@ -129,8 +135,22 @@ export function AudioView(): null {
         if (command.type === 'stop') void window.api.sendNoteAudio(command.token, null)
       })
     })
+    // A microphone plugged back in: open it again if the session wanted one and has none.
+    const onDeviceChange = (): void => {
+      if (!capture && wanted) {
+        const { deviceId, label } = wanted
+        open(deviceId, label, true).then(
+          () => void window.api.reportAudioStatus(null),
+          () => undefined
+        )
+      }
+    }
+    navigator.mediaDevices.addEventListener('devicechange', onDeviceChange)
     void window.api.reportAudioReady()
-    return unsubscribe
+    return () => {
+      unsubscribe()
+      navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange)
+    }
   }, [])
   return null
 }

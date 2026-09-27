@@ -72,7 +72,12 @@ export function StatusView(): React.JSX.Element {
         </span>
       </div>
       <div className="flex h-5 items-center gap-2 truncate text-sm">
-        {state.hiddenWindowsError ? (
+        {state.pttHolds.length > 0 ? (
+          <span className="truncate font-semibold text-semantic-red-600">
+            Talking: {state.pttHolds.map((hold) => (hold.target === 'aurora' ? 'Aurora' : 'voice chat')).join(', ')} ·{' '}
+            {state.pttHolds[0].deviceName}
+          </span>
+        ) : state.hiddenWindowsError ? (
           <span className="truncate font-semibold text-semantic-red-600">{problem}</span>
         ) : recording.dictatingMarkerId ? (
           <span className="flex items-center gap-2 font-semibold text-semantic-red-600">

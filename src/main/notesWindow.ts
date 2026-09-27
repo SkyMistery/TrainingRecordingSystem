@@ -1,4 +1,4 @@
-import { BrowserWindow, screen } from 'electron'
+import { BrowserWindow, screen, session } from 'electron'
 import { recordedDisplay } from './displays'
 
 let window: BrowserWindow | null = null
@@ -8,11 +8,24 @@ let window: BrowserWindow | null = null
  * on Discord. It goes on a monitor other than the main window's and the
  * recorded one, and is excluded from screen capture (OBS, Discord) anyway:
  * the trainer's notes must never end up in a recording or a shared screen.
+ * It is let in with a cookie the app sets itself (no pairing link needed).
  */
-export function openNotesWindow(pairUrl: string, obsDisplayName: string | undefined): void {
+export async function openNotesWindow(
+  page: { url: string; cookie: { name: string; value: string } },
+  obsDisplayName: string | undefined
+): Promise<void> {
+  await session.defaultSession.cookies.set({
+    url: page.url,
+    name: page.cookie.name,
+    value: page.cookie.value,
+    httpOnly: true,
+    sameSite: 'lax'
+  })
   if (window && !window.isDestroyed()) {
-    // A new pairing code or port makes the old address useless.
-    if (window.webContents.getURL() !== pairUrl) void window.loadURL(pairUrl)
+    // Another port (Setup) makes the old address useless; otherwise the page stays as it is.
+    if (new URL(window.webContents.getURL() || page.url).origin !== new URL(page.url).origin) {
+      void window.loadURL(page.url)
+    }
     window.show()
     window.focus()
     return
@@ -44,5 +57,5 @@ export function openNotesWindow(pairUrl: string, obsDisplayName: string | undefi
   window.on('closed', () => {
     window = null
   })
-  void window.loadURL(pairUrl)
+  void window.loadURL(page.url)
 }

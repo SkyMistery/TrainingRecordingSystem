@@ -207,7 +207,7 @@ function CompanionButton({
             variant="destructive"
             Icon={ShieldAlert}
             title="Your network is set to Public"
-            description="Windows blocks tablets from connecting on Public networks. Set the network profile to Private (see Setup → Companion)."
+            description="Windows blocks tablets on Public networks, and that is right on a network that isn’t yours (hotel, university, café): there, turn network access off. Only on your home network, set its profile to Private: Windows Settings → Network & internet → Wi-Fi (or Ethernet) → your network → “Network profile type”."
           />
         )}
         {info.error && (

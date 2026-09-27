@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, rm, unlink, writeFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, screen, shell } from 'electron'
 import type {
   AppState,
   CompanionSettings,
@@ -30,14 +30,15 @@ import type {
   UpdateState,
   WhisperModelId
 } from '../shared/types'
-import { sameHotkey } from '../shared/hotkey'
-import { RECORDING_CONSENT } from '../shared/terms'
+import { bestMatch, pressMatches, sameKey } from '../shared/hotkey'
+import { PLAYBACK_RATES } from '../shared/markers'
+import { RECORDING_CONSENT, TERMS_VERSION } from '../shared/terms'
 import { isAppPage } from './appPages'
 import { AudioCapture } from './audioWindow'
-import { CompanionServer, newCompanionToken } from './companion'
+import { CompanionServer, type CompanionDevice } from './companion'
 import { sessionFilePath } from './media'
 import { openNotesWindow } from './notesWindow'
-import { GlobalHotkeys } from './hotkeys'
+import { canSimulate, GlobalHotkeys } from './hotkeys'
 import { ObsRecorder } from './recorder/ObsRecorder'
 import type { Recorder } from './recorder/Recorder'
 import {
@@ -55,6 +56,14 @@ import {
 import { decryptSecret, encryptSecret, getSettings, updateSettings } from './settings'
 import { hideStatusWindow, showStatusWindow } from './statusWindow'
 import { Transcriber } from './transcriber'
+import {
+  checkKeyConflicts,
+  validLanguage,
+  validMarkerSettings,
+  validModel,
+  validPlayerCommand,
+  validPttKey
+} from './validate'
 import { WindowMasks } from './windowMasks'
 
 interface ActiveSession {
@@ -81,11 +90,56 @@ interface Dictation {
   limit: NodeJS.Timeout | null
   /** Releases the voice-note hotkey held for a note started from a button. */
   releaseHotkey: (() => void) | null
+  /** Who started it: the hotkey, the app's button, or a Companion device (only it, or the app, ends it). */
+  owner: string
+  /** Started from the hotkey: its key is watched, in case the release never reaches the app. */
+  keyCheck: NodeJS.Timeout | null
 }
 
+/** A push-to-talk key held for a Companion device's button. */
+interface PttHoldState {
+  release: () => void
+  deviceId: string
+  deviceName: string
+  /** The longest it stays pressed (PTT_MAX_MS). */
+  limit: NodeJS.Timeout
+  /** Renewed by the device every second while its button is held (PTT_KEEPALIVE_MS). */
+  keepalive: NodeJS.Timeout
+}
+
+/** Commands from the app's own windows; Companion devices have their own id. */
+const FROM_APP = 'app'
+const FROM_HOTKEY = 'hotkey'
+
+const PTT_NAMES: Record<PttTarget, string> = { voiceChat: 'Voice chat push-to-talk', aurora: 'Aurora push-to-talk' }
+
 const PTT_TARGETS: PttTarget[] = ['voiceChat', 'aurora']
-/** A Companion push-to-talk key is released by itself after this long. */
-const PTT_MAX_MS = 5 * 60_000
+/**
+ * A Companion push-to-talk key is released by itself after this long: one
+ * transmission on the IVAO frequency is short; a voice chat talk may be longer.
+ */
+const PTT_MAX_MS: Record<PttTarget, number> = { aurora: 60_000, voiceChat: 5 * 60_000 }
+/** After that, the button must be released and pressed again, not before this pause. */
+const PTT_PAUSE_MS = 5_000
+/**
+ * The Companion repeats "still holding" every second while a push-to-talk
+ * button is held; without it for this long (phone locked, Wi-Fi gone, page
+ * frozen) the key is released.
+ */
+const PTT_KEEPALIVE_MS = 2_500
+/** A dictation from the hotkey: the key is checked this often, in case its release never reached the app. */
+const KEY_CHECK_MS = 250
+/** Companion markers: faster than this is a script or a stuck button, not a trainer. */
+const MIN_COMPANION_MARKER_MS = 300
+/** Session commands that name a session: from the Companion, only the one recorded or reviewed. */
+const SESSION_SCOPED = new Set<SessionCommandName>([
+  'toggleMarkerCategory',
+  'setMarkerTimes',
+  'deleteMarker',
+  'setNoteText',
+  'deleteNote',
+  'retranscribeNote'
+])
 
 /** Keeps the recording muted a moment longer: the voice trails off after release. */
 const UNMUTE_DELAY_MS = 300
@@ -110,13 +164,19 @@ export class Controller {
   private readonly windowMasks: WindowMasks
   private readonly hotkeys = new GlobalHotkeys()
   /** Push-to-talk keys held for the Companion's buttons. */
-  private readonly pttHolds = new Map<PttTarget, { release: () => void; limit: NodeJS.Timeout }>()
+  private readonly pttHolds = new Map<PttTarget, PttHoldState>()
+  /** A button that reached its time limit: its device must release it, and wait a moment, before pressing again. */
+  private readonly pttPaused = new Map<PttTarget, { deviceId: string; until: number; mustRelease: boolean }>()
+  /** When each Companion device last added a marker (MIN_COMPANION_MARKER_MS). */
+  private readonly lastCompanionMarker = new Map<string, number>()
   private active: ActiveSession | null = null
   private dictation: Dictation | null = null
   /** Set while a session is being ended (see endSession). */
   private ending: Promise<void> | null = null
   private reconnectTimer: NodeJS.Timeout | null = null
   private displayTimer: NodeJS.Timeout | null = null
+  /** The hook, OBS and the Companion run (after the terms of use are accepted). */
+  private servicesStarted = false
   /** Whether the main window may be captured (shared on Discord): only while a review is open. */
   private shareable = false
   private state: AppState
@@ -142,19 +202,35 @@ export class Controller {
   private readonly companion = new CompanionServer(
     {
       state: () => this.companionState(),
-      execute: (name, args) => this.execute(name, args),
+      execute: (name, args, device) => this.execute(name, args, device),
+      deviceGone: (device) => this.deviceGone(device),
+      paired: (device, address) =>
+        this.patch({
+          notice: {
+            kind: 'warning',
+            title: 'A new device paired with the Companion',
+            message: `${device.name}${address ? ` (${address.replace(/^::ffff:/, '')})` : ''} can now see your notes and use the Companion’s buttons. If it isn’t yours, remove it in Setup → Companion.`
+          }
+        }),
+      mediaAllowed: (folderName, path) => this.companionMayRead(folderName, path),
       changed: () => this.patch({ companion: this.companion.info() })
     },
     () => getSettings().companion,
-    () => getSettings().companionToken
+    {
+      list: () => getSettings().companionDevices ?? [],
+      save: async (companionDevices) => {
+        await updateSettings({ companionDevices })
+      }
+    }
   )
 
   /** Session edits and live actions shared by the desktop windows and the Companion page. */
   private readonly commands: { [K in SessionCommandName]: (...args: SessionCommands[K]) => Promise<void> } = {
     addMarker: () => this.addPointMarker(),
     toggleRange: () => this.toggleRange(),
-    startNote: () => this.startNote(),
-    stopNote: () => this.stopNote(),
+    // Notes and push-to-talk depend on who asks: see execute().
+    startNote: () => this.startNote(FROM_APP),
+    stopNote: () => this.stopNote(FROM_APP),
     toggleMarkerCategory: async (folderName, markerId, categoryId) => {
       await this.editSession(folderName, (session) => {
         const marker = this.findMarker(session, markerId)
@@ -200,8 +276,10 @@ export class Controller {
       this.transcriber.enqueue(this.sessionFolder(folderName), noteId)
     },
     playerCommand: async (command) => this.sendPlayerCommand(command),
-    holdPtt: async (target) => this.holdPtt(target),
-    releasePtt: async (target) => this.releasePtt(target)
+    holdPtt: async () => {
+      throw new Error('Push-to-talk buttons are on the Companion')
+    },
+    releasePtt: async (target) => this.releasePtt(target, FROM_APP)
   }
 
   /**
@@ -228,9 +306,12 @@ export class Controller {
       noteSettings: settings.notes,
       transcription: this.transcriptionState(),
       review: null,
-      companion: { running: false, error: null, urls: [], qr: null, clients: 0, publicNetwork: false },
+      companion: { running: false, error: null, urls: [], qr: null, clients: 0, publicNetwork: false, devices: [] },
       update: null,
       notice: null,
+      pttHolds: [],
+      stuckKey: null,
+      hotkeysError: null,
       termsAcceptedVersion: settings.termsAccepted?.version ?? null,
       busy: false
     }
@@ -297,26 +378,63 @@ export class Controller {
     await this.windowMasks.start()
     this.hotkeys.on('down', (hotkey) => this.onHotkey(hotkey))
     this.hotkeys.on('up', (hotkey) => {
-      if (this.dictation && sameHotkey(hotkey, getSettings().markers.hotkeys.voiceNote)) this.run(() => this.stopNote())
+      const dictation = this.dictation
+      if (dictation?.owner === FROM_HOTKEY && pressMatches(hotkey, getSettings().markers.hotkeys.voiceNote)) {
+        this.run(() => this.stopNote(FROM_HOTKEY))
+      }
     })
-    try {
-      this.hotkeys.start()
-    } catch (error) {
-      console.error('Global hotkeys unavailable', error)
-    }
+    this.hotkeys.on('stuck', (stuckKey) => {
+      if (stuckKey) {
+        this.feedback('error')
+        this.warn(stuckKey)
+      }
+      this.patch({ stuckKey })
+    })
     // A monitor rearranged, plugged in or resized moves the recorded one: the masks follow its position.
     screen.on('display-added', () => this.scheduleDisplayRefresh())
     screen.on('display-removed', () => this.scheduleDisplayRefresh())
     screen.on('display-metrics-changed', () => this.scheduleDisplayRefresh())
+    // Locking the PC or putting it to sleep: nothing stays pressed (Aurora would keep transmitting),
+    // and a dictation whose release happens over the lock screen ends.
+    powerMonitor.on('lock-screen', () => this.releaseEverything())
+    powerMonitor.on('suspend', () => this.releaseEverything())
+    // The hook, OBS (it switches OBS to the app's profile) and the Companion only once the terms are accepted.
+    if (getSettings().termsAccepted?.version === TERMS_VERSION) await this.startServices()
+  }
+
+  /** Everything that acts outside the app's own window. */
+  private async startServices(): Promise<void> {
+    if (this.servicesStarted) return
+    this.servicesStarted = true
+    const { companion, markers, notes } = getSettings()
+    // Left down by a run that ended while holding them (a crash): released before anything else.
+    this.hotkeys.releaseIfDown([
+      companion.pttKeys.voiceChat,
+      companion.pttKeys.aurora,
+      notes.holdHotkeyFromButtons ? markers.hotkeys.voiceNote : null
+    ])
+    try {
+      this.hotkeys.start()
+    } catch (error) {
+      console.error('Global hotkeys unavailable', error)
+      this.patch({
+        hotkeysError: `Hotkeys don’t work: Windows refused the keyboard hook (${error instanceof Error ? error.message : String(error)}). Restart the app; if it persists, restart Windows.`
+      })
+    }
     // Connect silently at startup; the Setup page shows the outcome.
     // Then leftovers of the last run: after connecting, so a recording OBS is still
     // writing is continued (reattachRecording) rather than picked up as finished.
     void this.connectObs()
       .catch(() => undefined)
       .finally(() => void this.resumeTranscriptions())
-    // Persist the pairing secret generated on first run.
-    await updateSettings({ companionToken: getSettings().companionToken })
     await this.companion.restart()
+  }
+
+  /** Lock screen, sleep, an unexpected error: every key the app holds is released, dictations end. */
+  releaseEverything(): void {
+    for (const target of [...this.pttHolds.keys()]) this.releasePtt(target, FROM_APP)
+    if (this.dictation) this.run(() => this.stopNote(FROM_APP))
+    this.hotkeys.releaseAll()
   }
 
   isRecording(): boolean {
@@ -422,40 +540,77 @@ export class Controller {
     )
     handle('session:start', (metadata: SessionMetadata, consent: boolean) => this.startSession(metadata, consent))
     handle('terms:accept', async (version: number) => {
-      if (!Number.isInteger(version)) throw new Error('Invalid terms version')
+      if (version !== TERMS_VERSION) throw new Error('Invalid terms version')
       await updateSettings({ termsAccepted: { version, acceptedAt: new Date().toISOString() } })
       this.patch({ termsAcceptedVersion: version })
+      await this.startServices()
     })
     handle('session:stop', () => this.stopSession())
     handle('notice:dismiss', () => this.patch({ notice: null }))
     handle('notice:retry', () => this.saveUnsaved())
 
-    handle('command', (name: SessionCommandName, args: unknown[]) => this.execute(name, args))
-    handle('markers:saveSettings', async (patch: Partial<MarkerSettings>) => {
-      const markers: MarkerSettings = { ...getSettings().markers, ...patch }
+    handle('command', (name: SessionCommandName, args: unknown[]) => this.execute(name, args, null))
+    handle('markers:saveSettings', async (patch: unknown) => {
+      const markers: MarkerSettings = { ...getSettings().markers, ...validMarkerSettings(patch) }
+      checkKeyConflicts(getSettings().companion.pttKeys, markers.hotkeys.voiceNote)
+      const { holdHotkeyFromButtons } = getSettings().notes
+      if (holdHotkeyFromButtons && markers.hotkeys.voiceNote && !canSimulate(markers.hotkeys.voiceNote)) {
+        throw new Error(
+          `${markers.hotkeys.voiceNote.label} can’t be pressed by the app: choose another voice-note key, or turn off holding it for buttons`
+        )
+      }
       await updateSettings({ markers })
       this.patch({ markerSettings: markers })
     })
     handle('notes:saveSettings', async (patch: Partial<NoteSettings>) => {
+      if (patch.model !== undefined) validModel(patch.model)
+      if (patch.language !== undefined) validLanguage(patch.language)
+      if (patch.vocabulary !== undefined && (typeof patch.vocabulary !== 'string' || patch.vocabulary.length > 2000)) {
+        throw new Error('Invalid vocabulary')
+      }
       const notes: NoteSettings = { ...getSettings().notes, ...patch }
+      const voiceNote = getSettings().markers.hotkeys.voiceNote
+      if (notes.holdHotkeyFromButtons && voiceNote && !canSimulate(voiceNote)) {
+        throw new Error(`${voiceNote.label} can’t be pressed by the app: choose another voice-note key first`)
+      }
       await updateSettings({ notes })
       this.patch({ noteSettings: notes })
       // A different model or language may unblock notes waiting for one.
       if (this.active) await this.transcriber.resume(this.active.folder, this.active.session)
     })
-    handle('models:download', (model: WhisperModelId) => this.transcriber.downloadModel(model))
+    handle('models:download', (model: WhisperModelId) => this.transcriber.downloadModel(validModel(model)))
     handle('models:cancelDownload', () => this.transcriber.cancelDownload())
     handle('review:open', (folderName: string) => this.openReview(folderName))
-    handle('review:close', () => this.patch({ review: null }))
+    handle('review:close', () => {
+      // Push-to-talk buttons work during a recording or a review only.
+      if (!this.active) for (const target of [...this.pttHolds.keys()]) this.releasePtt(target, FROM_APP)
+      this.patch({ review: null })
+    })
     handle('player:report', (player: PlayerState) => {
-      if (this.state.review) this.patch({ review: { ...this.state.review, player } })
+      const review = this.state.review
+      if (!review) return
+      // Several times a second: the position alone goes to the devices, not the whole state to every window.
+      this.state = { ...this.state, review: { ...review, player } }
+      this.companion.sendPlayer(player)
     })
     handle('companion:save', async (patch: Partial<CompanionSettings>) => {
       const previous = getSettings().companion
       const companion: CompanionSettings = { ...previous, ...patch }
+      if (patch.pttKeys) {
+        companion.pttKeys = {
+          voiceChat: validPttKey('voiceChat', patch.pttKeys.voiceChat),
+          aurora: validPttKey('aurora', patch.pttKeys.aurora)
+        }
+        checkKeyConflicts(companion.pttKeys, getSettings().markers.hotkeys.voiceNote)
+      }
+      if (!Number.isInteger(companion.port) || companion.port < 1024 || companion.port > 65535) {
+        throw new Error('The port must be a number from 1024 to 65535')
+      }
+      companion.enabled = Boolean(companion.enabled)
+      companion.lan = Boolean(companion.lan)
       await updateSettings({ companion })
       this.patch({ companionSettings: companion })
-      if (patch.pttKeys) for (const target of [...this.pttHolds.keys()]) this.releasePtt(target)
+      if (patch.pttKeys) for (const target of [...this.pttHolds.keys()]) this.releasePtt(target, FROM_APP)
       // Only these need the server restarted, which disconnects the devices.
       if (
         companion.enabled !== previous.enabled ||
@@ -465,18 +620,20 @@ export class Controller {
         await this.companion.restart()
       }
     })
-    handle('companion:newToken', async () => {
-      // Unpairs every device: they need the new link or QR code.
-      await updateSettings({ companionToken: newCompanionToken() })
-      await this.companion.restart()
-    })
+    // Every device must pair again (a lost phone, a link seen by someone else).
+    handle('companion:unpairAll', () => this.companion.removeDevices('all'))
+    handle('companion:removeDevice', (id: string) => this.companion.removeDevices([String(id)]))
+    // The PC's "Release" next to a push-to-talk key held for a device.
+    handle('companion:releasePtt', (target: PttTarget) => this.releasePtt(target, FROM_APP))
     handle('companion:refresh', () => this.companion.refreshNetwork())
     handle('companion:openWindow', () =>
-      openNotesWindow(this.requireCompanion().pairUrl(), this.state.capture.display?.name)
+      openNotesWindow(this.requireCompanion().localPage(), this.state.capture.display?.name)
     )
     handle('companion:openBrowser', () => shell.openExternal(this.requireCompanion().pairUrl()))
-    handle('hotkeys:capture', (modifiersAlone?: boolean) => this.hotkeys.captureNext(modifiersAlone === true))
-    handle('hotkeys:cancelCapture', () => this.hotkeys.cancelCapture())
+    handle('hotkeys:capture', (id: string, modifiersAlone?: boolean) =>
+      this.hotkeys.captureNext(String(id), modifiersAlone === true)
+    )
+    handle('hotkeys:cancelCapture', (id: string) => this.hotkeys.cancelCapture(String(id)))
   }
 
   /** The pairing link must not go to another program that took the Companion's port. */
@@ -743,6 +900,8 @@ export class Controller {
         this.active = null
         this.ending = null
         this.patch({ recording: null })
+        // Push-to-talk buttons work during a recording or a review only.
+        if (!this.state.review) this.releaseAllPtt()
         this.broadcast('sessions:changed', null)
         // Stopped from OBS itself: OBS's own folder still points into this session.
         void this.recorder.resetOutputDir(getSettings().sessionsDir).catch(() => undefined)
@@ -758,7 +917,7 @@ export class Controller {
     durationMs: number | undefined,
     stopped: boolean
   ): Promise<void> {
-    if (this.dictation) await this.stopNote().catch(() => undefined)
+    if (this.dictation) await this.stopNote(FROM_APP).catch(() => undefined)
     // A note released just before the end is still being saved: its audio must not be cut off.
     await Promise.all([...this.savingNotes]).catch(() => undefined)
     this.audio.close()
@@ -971,16 +1130,14 @@ export class Controller {
   private onHotkey(hotkey: Hotkey): void {
     if (!this.active || this.ending) return
     const { hotkeys, categories } = getSettings().markers
-    if (sameHotkey(hotkey, hotkeys.marker)) {
-      this.run(() => this.addPointMarker())
-    } else if (sameHotkey(hotkey, hotkeys.range)) {
-      this.run(() => this.toggleRange())
-    } else if (sameHotkey(hotkey, hotkeys.voiceNote)) {
-      this.run(() => this.startNote(true))
-    } else {
-      const category = categories.find((item) => sameHotkey(hotkey, item.hotkey))
-      if (category) this.run(() => this.tagLatestMarker(category.id))
-    }
+    // Extra modifiers don't stop a hotkey: the trainer may be talking (Right Ctrl, AltGr) while pressing it.
+    const action = bestMatch<() => Promise<void>>(hotkey, [
+      { binding: hotkeys.marker, value: () => this.addPointMarker() },
+      { binding: hotkeys.range, value: () => this.toggleRange() },
+      { binding: hotkeys.voiceNote, value: () => this.startNote(FROM_HOTKEY) },
+      ...categories.map((category) => ({ binding: category.hotkey, value: () => this.tagLatestMarker(category.id) }))
+    ])
+    if (action) this.run(action)
   }
 
   private newMarker(active: ActiveSession, kind: Marker['kind']): Marker {
@@ -1088,10 +1245,11 @@ export class Controller {
   /**
    * Push-to-talk pressed: the note goes to the open range, or to the latest
    * marker if it is recent enough; otherwise a new marker is created for it.
-   * `fromHotkey`: the trainer is holding the hotkey; otherwise (a button in the
-   * app or the Companion) the hotkey may be held for them, for Discord's push-to-mute.
+   * `owner`: FROM_HOTKEY (the trainer holds the hotkey), FROM_APP (the app's
+   * button) or a Companion device; only it, or the app, ends the note. From a
+   * button, the hotkey may be held for the trainer (Discord's push-to-mute).
    */
-  private async startNote(fromHotkey = false): Promise<void> {
+  private async startNote(owner: string): Promise<void> {
     const active = this.requireActive()
     if (this.dictation) return
     const now = Math.round(this.recorder.currentTimeMs())
@@ -1107,11 +1265,16 @@ export class Controller {
       createdMarker: !marker,
       mutedSourceIds: [],
       started: Promise.resolve(),
-      limit: setTimeout(() => {
-        if (this.dictation === dictation) this.run(() => this.stopNote())
-      }, MAX_DICTATION_MS),
-      releaseHotkey: fromHotkey ? null : this.holdVoiceNoteHotkey()
+      limit: null,
+      // Fails if the key can't be pressed: the note would then be heard in the voice chat.
+      releaseHotkey: owner === FROM_HOTKEY ? null : this.holdVoiceNoteHotkey(),
+      owner,
+      keyCheck: null
     }
+    dictation.limit = setTimeout(() => {
+      if (this.dictation === dictation) this.run(() => this.stopNote(FROM_APP))
+    }, MAX_DICTATION_MS)
+    if (owner === FROM_HOTKEY) dictation.keyCheck = this.watchNoteKey(dictation)
     // The release can arrive before this finishes: stopNote waits for `started`.
     dictation.started = (async () => {
       // Start capturing before anything slower (screenshot, OBS calls).
@@ -1128,8 +1291,12 @@ export class Controller {
       const toMute = this.state.capture.audioSources.filter((source) => source.muteDuringNotes && !source.muted)
       for (const source of toMute) {
         if (this.dictation !== dictation) break // already released
-        await this.recorder.setMuted(source.id, true).catch(() => undefined)
-        dictation.mutedSourceIds.push(source.id)
+        try {
+          await this.recorder.setMuted(source.id, true)
+          dictation.mutedSourceIds.push(source.id)
+        } catch {
+          this.warn(`OBS did not mute “${source.label}”: this voice note is in the recording.`)
+        }
       }
     })()
     this.dictation = dictation
@@ -1137,13 +1304,43 @@ export class Controller {
       await dictation.started
     } catch (error) {
       if (this.dictation === dictation) this.dictation = null
+      this.endDictationTimers(dictation)
       dictation.releaseHotkey?.()
       this.publishRecording()
       throw error
     }
   }
 
-  /** Holds the voice-note hotkey if the trainer asked for it; returns its release. */
+  /**
+   * The hotkey's release may never reach the app (it happened over the lock
+   * screen, or in a program running as administrator): the key itself is
+   * checked, and the note ends once it is up.
+   */
+  private watchNoteKey(dictation: Dictation): NodeJS.Timeout | null {
+    const hotkey = getSettings().markers.hotkeys.voiceNote
+    if (!hotkey) return null
+    let upChecks = 0
+    return setInterval(() => {
+      if (this.dictation !== dictation) return
+      upChecks = this.hotkeys.isDown(hotkey) ? 0 : upChecks + 1
+      // Twice in a row: a normal release reaches the hook first.
+      if (upChecks >= 2) {
+        this.hotkeys.forgetHeld(hotkey)
+        this.run(() => this.stopNote(FROM_HOTKEY))
+      }
+    }, KEY_CHECK_MS)
+  }
+
+  private endDictationTimers(dictation: Dictation): void {
+    if (dictation.limit) clearTimeout(dictation.limit)
+    if (dictation.keyCheck) clearInterval(dictation.keyCheck)
+  }
+
+  /**
+   * Holds the voice-note hotkey if the trainer asked for it; returns its
+   * release. Throws if it can't be pressed: the note isn't started then, or
+   * Discord wouldn't mute the trainer and the trainee would hear it.
+   */
   private holdVoiceNoteHotkey(): (() => void) | null {
     const hotkey = getSettings().markers.hotkeys.voiceNote
     if (!hotkey || !getSettings().notes.holdHotkeyFromButtons) return null
@@ -1151,24 +1348,41 @@ export class Controller {
       return this.hotkeys.hold(hotkey)
     } catch (error) {
       console.error('Could not hold the voice note hotkey', error)
-      return null
+      this.feedback('error')
+      throw new Error(
+        `The note was not started, so that it isn’t heard in the voice chat: ${error instanceof Error ? error.message : String(error)}`
+      )
     }
   }
 
-  private async stopNote(): Promise<void> {
+  /** Push-to-talk released. `from`: who asks (see startNote); another Companion device can't end this note. */
+  private async stopNote(from: string): Promise<void> {
     const dictation = this.dictation
     const active = this.active
     if (!dictation || !active) return
+    const fromDevice = from !== FROM_APP && from !== FROM_HOTKEY
+    if (fromDevice && from !== dictation.owner) return
+    if (from === FROM_HOTKEY && dictation.owner !== FROM_HOTKEY) return
     this.dictation = null
-    if (dictation.limit) clearTimeout(dictation.limit)
+    this.endDictationTimers(dictation)
     dictation.releaseHotkey?.()
     this.publishRecording()
     this.feedback('noteEnd')
+    // Tracked: the end of the session waits for the audio before closing the microphone.
+    const saving = this.saveNote(active, dictation)
+    this.savingNotes.add(saving)
+    try {
+      await saving
+    } finally {
+      this.savingNotes.delete(saving)
+    }
+  }
+
+  private async saveNote(active: ActiveSession, dictation: Dictation): Promise<void> {
     const started = await dictation.started.then(
       () => true,
       () => false
     )
-
     setTimeout(() => {
       for (const id of dictation.mutedSourceIds) {
         // Only if the trainer didn't mute it on purpose meanwhile.
@@ -1179,7 +1393,12 @@ export class Controller {
     if (!started) return
 
     const audio = await this.audio.stop(dictation.token)
-    if (!audio) {
+    if (audio === 'failed') {
+      // Not a tap: the microphone window didn't answer. The marker stays; the problem is shown.
+      this.warn('A voice note was lost: the microphone didn’t answer. Check the microphone in Setup → Voice notes.')
+      return
+    }
+    if (audio === 'tap') {
       // An accidental tap: don't leave behind a marker made only for this note.
       if (dictation.createdMarker && this.active === active) {
         await this.deleteMarker(basename(active.folder), dictation.markerId, true).catch(() => undefined)
@@ -1246,10 +1465,39 @@ export class Controller {
 
   // --- Session edits, review and Companion -------------------------------------------
 
-  private async execute(name: SessionCommandName, args: unknown[]): Promise<void> {
-    const command = this.commands[name] as ((...args: unknown[]) => Promise<void>) | undefined
-    if (!command) throw new Error(`Unknown command: ${name}`)
-    await command(...args)
+  /** A session command from the app's windows (`device` null) or from a Companion device. */
+  private async execute(name: SessionCommandName, args: unknown[], device: CompanionDevice | null): Promise<void> {
+    const command = Object.hasOwn(this.commands, name)
+      ? (this.commands[name] as (...args: unknown[]) => Promise<void>)
+      : undefined
+    if (!command || !Array.isArray(args)) throw new Error('Unknown command')
+    if (!device) return command(...args)
+    // A device reaches only the session it shows: never the others in the archive.
+    if (SESSION_SCOPED.has(name)) {
+      const folderName = args[0]
+      if (folderName !== this.state.recording?.folderName && folderName !== this.state.review?.folderName) {
+        throw new Error('That session is not open')
+      }
+    }
+    switch (name) {
+      case 'startNote':
+        return this.startNote(device.id)
+      case 'stopNote':
+        return this.stopNote(device.id)
+      case 'holdPtt':
+        return this.holdPtt(args[0], device)
+      case 'releasePtt':
+        return this.releasePtt(args[0], device.id)
+      case 'addMarker':
+      case 'toggleRange': {
+        const last = this.lastCompanionMarker.get(device.id) ?? 0
+        if (Date.now() - last < MIN_COMPANION_MARKER_MS) throw new Error('One marker at a time')
+        this.lastCompanionMarker.set(device.id, Date.now())
+        return command(...args)
+      }
+      default:
+        return command(...args)
+    }
   }
 
   /** Full path of a session folder given its name, refusing anything outside the sessions folder. */
@@ -1318,7 +1566,7 @@ export class Controller {
   /** The review player lives in the main window; other views steer it through here. */
   private sendPlayerCommand(command: PlayerCommand): void {
     if (!this.state.review) throw new Error('No session is open for review')
-    this.broadcast('player:command', command)
+    this.broadcast('player:command', validPlayerCommand(command))
   }
 
   private companionState(): CompanionState {
@@ -1332,30 +1580,99 @@ export class Controller {
       pttKeys: PTT_TARGETS.flatMap((target) => {
         const key = pttKeys[target]
         return key ? [{ target, label: key.label }] : []
-      })
+      }),
+      pttHolds: this.state.pttHolds
     }
   }
 
   // --- Companion push-to-talk --------------------------------------------------------
 
-  /** Holds the voice chat's or Aurora's push-to-talk key while the Companion's button is held. */
-  private holdPtt(target: PttTarget): void {
-    if (!PTT_TARGETS.includes(target)) throw new Error('Unknown push-to-talk button')
-    const key = getSettings().companion.pttKeys[target]
+  /**
+   * Holds the voice chat's or Aurora's push-to-talk key while a Companion
+   * device's button is held. The device repeats this every second (keep-alive):
+   * the key goes up if it stops (a phone locked mid-press, Wi-Fi gone), after
+   * PTT_MAX_MS in any case, and when the recording or review ends.
+   */
+  private holdPtt(target: unknown, device: CompanionDevice): void {
+    if (!PTT_TARGETS.includes(target as PttTarget)) throw new Error('Unknown push-to-talk button')
+    const button = target as PttTarget
+    if (!this.state.recording && !this.state.review) {
+      throw new Error('Push-to-talk buttons work during a recording or a review')
+    }
+    const key = getSettings().companion.pttKeys[button]
     if (!key) throw new Error('No push-to-talk key set: see Setup → Companion')
-    if (this.pttHolds.has(target)) return
+    const held = this.pttHolds.get(button)
+    if (held) {
+      if (held.deviceId !== device.id) throw new Error(`${PTT_NAMES[button]} is held on ${held.deviceName}`)
+      held.keepalive.refresh()
+      return
+    }
+    const paused = this.pttPaused.get(button)
+    if (paused?.deviceId === device.id && (paused.mustRelease || Date.now() < paused.until)) {
+      throw new Error(
+        `${PTT_NAMES[button]} was released after ${PTT_MAX_MS[button] / 1000} s: let go of the button and press it again`
+      )
+    }
     const release = this.hotkeys.hold(key)
-    // A release that never arrives (a phone locked mid-press) must not keep talking.
-    const limit = setTimeout(() => this.releasePtt(target), PTT_MAX_MS)
-    this.pttHolds.set(target, { release, limit })
+    const limit = setTimeout(() => {
+      this.releasePtt(button, FROM_APP)
+      this.pttPaused.set(button, { deviceId: device.id, until: Date.now() + PTT_PAUSE_MS, mustRelease: true })
+      this.feedback('error')
+    }, PTT_MAX_MS[button])
+    const keepalive = setTimeout(() => this.releasePtt(button, FROM_APP), PTT_KEEPALIVE_MS)
+    this.pttHolds.set(button, { release, deviceId: device.id, deviceName: device.name, limit, keepalive })
+    this.publishPtt()
   }
 
-  private releasePtt(target: PttTarget): void {
-    const hold = this.pttHolds.get(target)
-    if (!hold) return
-    this.pttHolds.delete(target)
+  /** `from`: the device that holds it, or the app (limit, keep-alive, the PC's Release button, end of session). */
+  private releasePtt(target: unknown, from: string): void {
+    if (!PTT_TARGETS.includes(target as PttTarget)) throw new Error('Unknown push-to-talk button')
+    const button = target as PttTarget
+    const paused = this.pttPaused.get(button)
+    // The device let go after its limit: it may press again after the pause.
+    if (paused && paused.deviceId === from) paused.mustRelease = false
+    const hold = this.pttHolds.get(button)
+    // Another device's release must not cut this one off.
+    if (!hold || (from !== FROM_APP && from !== hold.deviceId)) return
+    this.pttHolds.delete(button)
     clearTimeout(hold.limit)
+    clearTimeout(hold.keepalive)
     hold.release()
+    this.publishPtt()
+  }
+
+  private releaseAllPtt(): void {
+    for (const target of [...this.pttHolds.keys()]) this.releasePtt(target, FROM_APP)
+  }
+
+  private publishPtt(): void {
+    this.patch({
+      pttHolds: [...this.pttHolds].map(([target, hold]) => ({
+        target,
+        deviceId: hold.deviceId,
+        deviceName: hold.deviceName
+      }))
+    })
+  }
+
+  /** A device's last connection closed: its release will never arrive. */
+  private deviceGone(device: CompanionDevice): void {
+    for (const [target, hold] of [...this.pttHolds]) if (hold.deviceId === device.id) this.releasePtt(target, FROM_APP)
+    if (this.dictation?.owner === device.id) this.run(() => this.stopNote(device.id))
+    this.lastCompanionMarker.delete(device.id)
+  }
+
+  /** The files a device may download: the screenshots and voice notes of the session it shows. */
+  private companionMayRead(folderName: string, path: string): boolean {
+    const markers =
+      this.state.recording?.folderName === folderName
+        ? this.state.recording.markers
+        : this.state.review?.folderName === folderName
+          ? this.state.review.markers
+          : null
+    return (
+      markers?.some((marker) => marker.screenshot === path || marker.notes.some((note) => note.audio === path)) ?? false
+    )
   }
 
   /** Transcribes notes left over from a previous run (app closed mid-queue) and recovers orphaned recordings. */

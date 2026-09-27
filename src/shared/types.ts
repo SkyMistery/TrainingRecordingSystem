@@ -291,6 +291,12 @@ export interface AppState {
   microphoneError: string | null
   update: UpdateState | null
   notice: AppNotice | null
+  /** Push-to-talk keys held for Companion buttons right now: shown on the PC, with a Release button. */
+  pttHolds: PttHold[]
+  /** A key the app pressed and Windows didn't let it release yet (it keeps trying), if any. */
+  stuckKey: string | null
+  /** Why the global hotkeys don't work, if they don't. */
+  hotkeysError: string | null
   /** Version of the terms of use the user accepted (see shared/terms.ts), if any. */
   termsAcceptedVersion: number | null
   busy: boolean
@@ -356,16 +362,34 @@ export interface CompanionSettings {
   pttKeys: Record<PttTarget, Hotkey | null>
 }
 
+/** A tablet or phone paired with the Companion (each has its own secret). */
+export interface CompanionDeviceInfo {
+  id: string
+  /** From its browser, e.g. "Android · Chrome". */
+  name: string
+  pairedAt: string
+  lastSeenAt: string | null
+  connected: boolean
+}
+
 export interface CompanionInfo {
   running: boolean
   error: string | null
-  /** Pairing links: this PC first, then local network addresses when enabled. */
+  /** One-time pairing links: this PC first, then local network addresses when enabled. */
   urls: string[]
   /** QR code (data URL) for the best network link, or this PC's. */
   qr: string | null
   clients: number
   /** Windows network profile is Public: its firewall blocks tablets. */
   publicNetwork: boolean
+  devices: CompanionDeviceInfo[]
+}
+
+/** A push-to-talk key the app is holding for a Companion button, and for which device. */
+export interface PttHold {
+  target: PttTarget
+  deviceId: string
+  deviceName: string
 }
 
 /** What the Companion page receives: everything it shows, nothing else. */
@@ -378,6 +402,8 @@ export interface CompanionState {
   voiceNoteHotkey: string | null
   /** Push-to-talk buttons to show, with the name of the key each one holds. */
   pttKeys: { target: PttTarget; label: string }[]
+  /** Push-to-talk keys held right now (the buttons show what the PC really does). */
+  pttHolds: PttHold[]
 }
 
 /**

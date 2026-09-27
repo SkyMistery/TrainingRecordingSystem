@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AppFooter } from './components/AppFooter'
 import { Header, type Page } from './components/Header'
+import { KeysBar } from './components/KeysBar'
 import { NoticeBanner } from './components/NoticeBanner'
 import { TermsDialog } from './components/TermsDialog'
 import { useMarkerFeedbackSound } from './feedback'
@@ -41,6 +42,7 @@ export function App(): React.JSX.Element {
         update={state?.update ?? null}
         recording={recording !== null}
       />
+      {state && <KeysBar state={state} />}
       <main className="flex flex-1 flex-col overflow-auto">
         {/* Not over the review: that window may be shared, and a notice can name another session. */}
         {state?.notice && !review && (

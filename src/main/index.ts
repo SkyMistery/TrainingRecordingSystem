@@ -9,6 +9,14 @@ import { installUpdate, startUpdater } from './updater'
 
 registerMediaScheme()
 
+// A bug must never leave a key pressed (Aurora would keep transmitting) nor
+// stop the app with a dialog on the shared screen: it is logged instead.
+process.on('uncaughtException', (error) => {
+  console.error('Unexpected error', error)
+  controller?.releaseEverything()
+})
+process.on('unhandledRejection', (reason) => console.error('Unhandled rejection', reason))
+
 // A second copy would fight over the keyboard hook, OBS, the Companion port and
 // the same files: bring the running one to the front instead.
 if (!app.requestSingleInstanceLock()) {

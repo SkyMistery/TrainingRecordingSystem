@@ -1,5 +1,8 @@
 import type { Marker, PlayerState } from './types'
 
+/** Review speeds: the player's buttons, and all a command may ask for. */
+export const PLAYBACK_RATES = [0.5, 1, 1.25, 1.5, 2, 5, 10]
+
 /** A point marker stays "current" for this long after its time. */
 const POINT_SPAN_MS = 20_000
 

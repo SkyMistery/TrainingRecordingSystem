@@ -17,6 +17,7 @@ import type {
   ObsConnectionConfig,
   PlayerCommand,
   PlayerState,
+  PttTarget,
   SessionCommandName,
   SessionCommands,
   SessionDetails,
@@ -96,7 +97,11 @@ const api = {
   onPlayerCommand: (listener: (command: PlayerCommand) => void) => subscribe('player:command', listener),
 
   saveCompanionSettings: (settings: Partial<CompanionSettings>) => invoke<void>('companion:save', settings),
-  newCompanionToken: () => invoke<void>('companion:newToken'),
+  /** Every device must pair again. */
+  unpairAllDevices: () => invoke<void>('companion:unpairAll'),
+  removeCompanionDevice: (id: string) => invoke<void>('companion:removeDevice', id),
+  /** Releases a push-to-talk key held for a Companion device. */
+  releasePtt: (target: PttTarget) => invoke<void>('companion:releasePtt', target),
   refreshCompanion: () => invoke<void>('companion:refresh'),
   openNotesWindow: () => invoke<void>('companion:openWindow'),
   installUpdate: () => invoke<void>('update:install'),
@@ -110,8 +115,9 @@ const api = {
   reportAudioReady: () => invoke<void>('audio:ready'),
 
   /** `modifiersAlone`: Right Ctrl, AltGr… alone count as a key (push-to-talk keys). */
-  captureHotkey: (modifiersAlone = false) => invoke<Hotkey | null>('hotkeys:capture', modifiersAlone),
-  cancelHotkeyCapture: () => invoke<void>('hotkeys:cancelCapture')
+  /** `id` names the capture: cancelling it never ends a newer one. */
+  captureHotkey: (id: string, modifiersAlone = false) => invoke<Hotkey | null>('hotkeys:capture', id, modifiersAlone),
+  cancelHotkeyCapture: (id: string) => invoke<void>('hotkeys:cancelCapture', id)
 }
 
 export type Api = typeof api
