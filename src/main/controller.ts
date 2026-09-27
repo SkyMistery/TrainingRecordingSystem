@@ -309,8 +309,11 @@ export class Controller {
     screen.on('display-removed', () => this.scheduleDisplayRefresh())
     screen.on('display-metrics-changed', () => this.scheduleDisplayRefresh())
     // Connect silently at startup; the Setup page shows the outcome.
-    void this.connectObs().catch(() => undefined)
-    void this.resumeTranscriptions()
+    // Then leftovers of the last run: after connecting, so a recording OBS is still
+    // writing is continued (reattachRecording) rather than picked up as finished.
+    void this.connectObs()
+      .catch(() => undefined)
+      .finally(() => void this.resumeTranscriptions())
     // Persist the pairing secret generated on first run.
     await updateSettings({ companionToken: getSettings().companionToken })
     await this.companion.restart()
@@ -681,11 +684,18 @@ export class Controller {
    * (OBS crashed, the connection was lost, the file was busy) is picked up
    * when the session is opened or the app starts.
    */
-  private async recoverRecording(folder: string): Promise<void> {
+  private async recoverRecording(folder: string, opening = false): Promise<void> {
     if (this.active?.folder === folder) return
     const session = await this.store.read(folder)
     const recording = session.recording
     if (!recording || recording.file !== null) return
+    // Never stopped (lost connection, crash): OBS may still be writing it, and the
+    // session continues once OBS is back. Only the trainer opening it takes the file now.
+    if (!recording.endedAt && !opening) {
+      if (!this.recorder.isConnected()) return
+      const running = await this.recorder.recordingInProgress().catch(() => null)
+      if (running && resolve(running.outputDir).toLowerCase() === folder.toLowerCase()) return
+    }
     const found = await findRecordingFile(folder)
     if (!found) return
     const file = await adoptRecording(folder, found)
@@ -941,10 +951,12 @@ export class Controller {
   private async persist(): Promise<void> {
     const active = this.active
     if (!active) return
-    await this.store.update(active.folder, () => undefined).catch((error: unknown) => {
-      console.error('Could not save the session', error)
-      this.warn(`The session file could not be saved (${describeFileError(error)}): the next change tries again.`)
-    })
+    await this.store
+      .update(active.folder, () => undefined)
+      .catch((error: unknown) => {
+        console.error('Could not save the session', error)
+        this.warn(`The session file could not be saved (${describeFileError(error)}): the next change tries again.`)
+      })
   }
 
   // --- Markers -------------------------------------------------------------------
@@ -1286,7 +1298,7 @@ export class Controller {
   private async openReview(folderName: string): Promise<void> {
     const folder = this.sessionFolder(folderName)
     if (this.active?.folder === folder) throw new Error('This session is still being recorded')
-    await this.recoverRecording(folder).catch((error: unknown) => console.error('Recording not recovered', error))
+    await this.recoverRecording(folder, true).catch((error: unknown) => console.error('Recording not recovered', error))
     // Read only: a session on a read-only drive can still be reviewed.
     const session = await this.store.read(folder)
     this.patch({

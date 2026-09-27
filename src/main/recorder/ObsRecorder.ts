@@ -450,8 +450,8 @@ export class ObsRecorder implements Recorder {
   resetOutputDir(dir: string): Promise<void> {
     return this.exclusive(async () => {
       if (!this.connected || this.recording) return
-      const status = await this.call('GetRecordStatus')
-      if (status.outputActive) return
+      // Right after a stop OBS still reports its output active for a moment.
+      if (!(await this.waitUntilIdle(IDLE_WAIT_MS))) return
       // Only the app's own profile: the trainer's keeps their own folder.
       const { currentProfileName } = await this.call('GetProfileList')
       if (currentProfileName !== PROFILE) return
@@ -801,7 +801,9 @@ export class ObsRecorder implements Recorder {
     }
     return (
       sceneItemIndex !== 0 ||
-      Object.entries(expected).some(([key, value]) => Number(sceneItemTransform[key]) !== value && sceneItemTransform[key] !== value)
+      Object.entries(expected).some(
+        ([key, value]) => Number(sceneItemTransform[key]) !== value && sceneItemTransform[key] !== value
+      )
     )
   }
 
@@ -902,7 +904,11 @@ export class ObsRecorder implements Recorder {
           inputSettings: { color: MASK_COLOR, width: 16, height: 16 },
           sceneItemEnabled: false
         })
-        await this.call('SetSceneItemLocked', { sceneName: SCENE, sceneItemId: created.sceneItemId, sceneItemLocked: true })
+        await this.call('SetSceneItemLocked', {
+          sceneName: SCENE,
+          sceneItemId: created.sceneItemId,
+          sceneItemLocked: true
+        })
         return created
       })
       items.push(sceneItemId)

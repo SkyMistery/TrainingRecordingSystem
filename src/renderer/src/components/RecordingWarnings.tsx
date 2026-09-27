@@ -21,7 +21,13 @@ export function RecordingWarnings({
         />
       )}
       {warnings.map((warning) => (
-        <Alert key={warning} variant="destructive" Icon={TriangleAlert} title="Recording problem" description={warning} />
+        <Alert
+          key={warning}
+          variant="destructive"
+          Icon={TriangleAlert}
+          title="Recording problem"
+          description={warning}
+        />
       ))}
     </div>
   )

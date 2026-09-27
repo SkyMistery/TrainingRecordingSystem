@@ -78,6 +78,9 @@ const api = {
   startSession: (metadata: SessionMetadata, consent: boolean) => invoke<void>('session:start', metadata, consent),
   acceptTerms: (version: number) => invoke<void>('terms:accept', version),
   stopSession: () => invoke<void>('session:stop'),
+  dismissNotice: () => invoke<void>('notice:dismiss'),
+  /** The notice's "Try again" (e.g. save a session whose last save failed). */
+  retryNotice: () => invoke<void>('notice:retry'),
 
   /** Session edits and live actions (markers, notes, player), shared with the Companion page. */
   command: <K extends SessionCommandName>(name: K, ...args: SessionCommands[K]) => invoke<void>('command', name, args),

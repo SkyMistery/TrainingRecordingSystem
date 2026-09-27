@@ -151,7 +151,7 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
   }, [apply, zoomBy, resetZoom])
 
   const { metadata } = review
-  const src = mediaUrl(review.folderName, 'recording.mp4')
+  const src = mediaUrl(review.folderName, review.recordingFile ?? 'recording.mp4')
 
   const skip = (deltaMs: number): void => apply({ type: 'skip', deltaMs })
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AppFooter } from './components/AppFooter'
 import { Header, type Page } from './components/Header'
+import { NoticeBanner } from './components/NoticeBanner'
 import { TermsDialog } from './components/TermsDialog'
 import { useMarkerFeedbackSound } from './feedback'
 import { useAppState } from './hooks'
@@ -41,6 +42,12 @@ export function App(): React.JSX.Element {
         recording={recording !== null}
       />
       <main className="flex flex-1 flex-col overflow-auto">
+        {/* Not over the review: that window may be shared, and a notice can name another session. */}
+        {state?.notice && !review && (
+          <div className="container max-w-5xl pt-6">
+            <NoticeBanner key={state.notice.title + state.notice.message} notice={state.notice} />
+          </div>
+        )}
         {/* The review player uses the whole width: the recording is Full HD. */}
         <div className={review ? 'flex-1 px-6 py-4' : 'container max-w-5xl flex-1 py-8'}>
           {state &&

@@ -352,8 +352,8 @@ function ReviewView({
       </label>
       {ON_THIS_PC && (
         <p className="text-xs text-muted-foreground">
-          Voice notes played here come out of this PC: if you share Training Recording System on Discord with its
-          sound, the trainee hears them. Listen on a phone or tablet, or share without sound.
+          Voice notes played here come out of this PC: if you share Training Recording System on Discord with its sound,
+          the trainee hears them. Listen on a phone or tablet, or share without sound.
         </p>
       )}
 
