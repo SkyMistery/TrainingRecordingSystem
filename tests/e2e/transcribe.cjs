@@ -3,6 +3,8 @@
 // still find the model and the note. Isolated app instance, no OBS needed; it
 // uses the "base" model already downloaded by the app (hard-linked, not copied).
 const { spawn } = require('node:child_process')
+// The terms version the app asks for: isolated settings accept it.
+const { TERMS_VERSION } = require('./lib.cjs')
 const {
   copyFileSync,
   existsSync,
@@ -43,7 +45,7 @@ function setup() {
       sessionsDir: SESSIONS,
       notes: { model: 'base', language: 'en', transcribe: true },
       // Isolated test profile: the terms dialog would cover the page.
-      termsAccepted: { version: 1, acceptedAt: new Date().toISOString() },
+      termsAccepted: { version: TERMS_VERSION, acceptedAt: new Date().toISOString() },
       companion: { enabled: false, lan: false, port: 17648 },
       obs: { host: '127.0.0.1', port: 1, passwordEncrypted: null }
     })

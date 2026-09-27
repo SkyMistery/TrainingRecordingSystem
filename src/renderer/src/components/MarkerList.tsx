@@ -85,6 +85,8 @@ interface MarkerListProps {
   openRangeId: string | null
   dictatingMarkerId: string | null
   send: SendCommand
+  /** Whether voice notes can be played here (see NoteItem). */
+  notesPlayable?: boolean
 }
 
 /** Newest first; each marker shows its screenshot, time, kind, category and voice notes. */
@@ -160,6 +162,7 @@ export function MarkerList(props: MarkerListProps): React.JSX.Element {
                     onTextChange={(text) => props.send('setNoteText', props.folderName, marker.id, note.id, text)}
                     onRetranscribe={() => props.send('retranscribeNote', props.folderName, marker.id, note.id)}
                     onDelete={() => props.send('deleteNote', props.folderName, marker.id, note.id)}
+                    playable={props.notesPlayable ?? true}
                   />
                 ))}
               </div>

@@ -1,5 +1,8 @@
 import type { Marker, PlayerState } from './types'
 
+/** Review speeds: the player's buttons, and all a command may ask for. */
+export const PLAYBACK_RATES = [0.5, 1, 1.25, 1.5, 2, 5, 10]
+
 /** A point marker stays "current" for this long after its time. */
 const POINT_SPAN_MS = 20_000
 
@@ -28,6 +31,14 @@ export function nextMarker(markers: Marker[], positionMs: number): Marker | null
 export function previousMarker(markers: Marker[], positionMs: number): Marker | null {
   const before = byTime(markers).filter((marker) => marker.timeMs < positionMs - 1500)
   return before.at(-1) ?? null
+}
+
+/** Recording time now, extrapolated from the last update; frozen while OBS is paused. */
+export function recordingTime(
+  recording: { elapsedMs: number; sampledAt: number; paused: boolean },
+  now: number
+): number {
+  return recording.paused ? recording.elapsedMs : recording.elapsedMs + (now - recording.sampledAt)
 }
 
 /** Position now, extrapolated from the last report while playing. */

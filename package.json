@@ -1,7 +1,7 @@
 {
   "name": "training-recording-system",
   "productName": "Training Recording System",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "Record IVAO training sessions, mark significant moments, take voice notes and review them during the debriefing.",
   "main": "./out/main/index.js",
   "author": "SkyMistery",
@@ -13,11 +13,10 @@
     "predev": "node scripts/fetch-whisper.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "preview": "electron-vite preview",
+    "test": "node scripts/unit-tests.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "dist": "node scripts/fetch-whisper.mjs && electron-vite build && electron-builder --win --publish never",
-    "release": "node scripts/fetch-whisper.mjs && electron-vite build && electron-builder --win --publish always",
-    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.mjs\""
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.mjs\" \"tests/**/*.{cjs,ts}\" \".github/**/*.yml\""
   },
   "dependencies": {
     "electron-updater": "^6.8.9",

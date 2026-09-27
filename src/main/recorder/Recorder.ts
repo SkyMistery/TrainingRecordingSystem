@@ -4,7 +4,7 @@ import type {
   AudioTargetOption,
   CaptureConfig,
   DisplayOption,
-  MaskRect
+  MaskSlots
 } from '../../shared/types'
 
 /**
@@ -23,23 +23,30 @@ export interface Recorder {
   setMuted(sourceId: string, muted: boolean): Promise<void>
   setVolume(sourceId: string, volumeDb: number): Promise<void>
   /**
-   * Covers these parts of the captured display (private windows) in the
+   * Covers these parts of the recorded display (private windows) in the
    * recording, previews and screenshots; an empty list uncovers everything.
    * Called often: repeating the same masks must be cheap. While the recorder
    * is still setting up its scene this is not an error: the next call applies them.
    */
-  setMasks(masks: MaskRect[]): Promise<void>
-  /** Small JPEG of the captured display as a data URL, for previews. */
+  setMasks(masks: MaskSlots): Promise<void>
+  /** Small JPEG of the recorded scene (masks included) as a data URL, for previews. */
   preview(width: number): Promise<string | null>
 
   start(outputDir: string): Promise<void>
   /** Stops recording once the file is complete, and returns its path. */
   stop(): Promise<string | null>
   isRecording(): boolean
+  /** Paused in OBS (by the trainer): the recording doesn't advance. */
+  isPaused(): boolean
   /** Current position in the recording, in milliseconds. */
   currentTimeMs(): number
-  /** Saves a full-resolution screenshot of the captured display. */
+  /** Saves a full-resolution screenshot of the recorded scene (masks included). */
   screenshot(filePath: string): Promise<void>
+  /**
+   * Points the recorder's own output folder somewhere neutral when it is idle,
+   * so a recording started outside the app never lands in a session's folder.
+   */
+  resetOutputDir(dir: string): Promise<void>
 
   /**
    * A recording this app started that is still running after the connection
@@ -56,4 +63,8 @@ export interface RecorderEvents {
   onDisconnected(reason: string, durationMs?: number): void
   onLevels(levels: AudioLevels): void
   onRecordingStopped(filePath: string | null, durationMs: number): void
+  /** Something went wrong with the recording but it goes on (shown to the trainer). */
+  onWarning(message: string): void
+  /** The recording was paused or resumed in OBS. */
+  onPauseChanged(): void
 }

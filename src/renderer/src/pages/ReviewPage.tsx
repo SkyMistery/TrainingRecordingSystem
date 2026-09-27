@@ -24,6 +24,8 @@ import { useZoom } from '../components/useZoom'
 import { formatDuration } from '../format'
 
 const REPORT_INTERVAL_MS = 400
+/** How often a playing video is checked for a stall. */
+const STALL_CHECK_MS = 700
 
 /**
  * The debriefing player. It never shows the trainer's notes, so this window
@@ -41,7 +43,28 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
   const markers = byTime(review.markers)
   const markersRef = useRef(markers)
   markersRef.current = markers
-  const durationMs = videoDurationMs || review.durationMs
+  // Without a known length (a recording recovered after a crash) the markers at least fit on the timeline.
+  const durationMs =
+    videoDurationMs ||
+    review.durationMs ||
+    Math.max(0, ...review.markers.map((marker) => Math.max(marker.timeMs, marker.endMs ?? 0))) + 30_000
+
+  /**
+   * A recording cut short by a crash can report an unknown (Infinity) length:
+   * then the end of what can be played is its length. The main process keeps it
+   * for sessions that have none.
+   */
+  const measureDuration = (element: HTMLVideoElement): void => {
+    const seconds = Number.isFinite(element.duration)
+      ? element.duration
+      : element.seekable.length > 0
+        ? element.seekable.end(element.seekable.length - 1)
+        : 0
+    if (!Number.isFinite(seconds) || seconds <= 0) return
+    setVideoDurationMs(seconds * 1000)
+    if (review.durationMs === 0)
+      void window.api.reportDuration(review.folderName, seconds * 1000).catch(() => undefined)
+  }
   const categories = state.markerSettings.categories
   const current = currentMarker(markers, positionMs)
 
@@ -116,11 +139,14 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return
       // Dialogs (e.g. the Companion QR code) and focused controls keep their own keys.
       if (target?.closest('[role="dialog"], [role="alertdialog"]')) return
-      if (
-        (event.key === ' ' || event.key === 'Enter') &&
-        target?.closest('button, [role="switch"], [role="slider"], select, a')
-      )
+      // Enter still activates a focused control; Space is always play/pause here (after a click on
+      // the timeline or a button, it would otherwise repeat that click or do nothing).
+      if (event.key === 'Enter' && target?.closest('button, [role="switch"], select, a')) return
+      if (event.key === ' ' && target?.closest('select')) return
+      if (event.repeat && (event.key === ' ' || event.key.toLowerCase() === 'k' || event.key.toLowerCase() === 'f')) {
+        event.preventDefault()
         return
+      }
       const step = event.shiftKey ? 30_000 : 5_000
       const actions: Record<string, () => void> = {
         ' ': () => apply({ type: 'toggle' }),
@@ -140,7 +166,8 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
         '0': () => resetZoom(),
         Escape: () => setTheatre(false)
       }
-      const action = actions[event.key]
+      // Letters work with Caps Lock on too.
+      const action = actions[event.key] ?? (event.key.length === 1 ? actions[event.key.toLowerCase()] : undefined)
       if (action) {
         event.preventDefault()
         action()
@@ -150,8 +177,44 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
     return () => window.removeEventListener('keydown', onKey)
   }, [apply, zoomBy, resetZoom])
 
+  /**
+   * Chromium sometimes stops for good when the speed jumps (e.g. 1× → 10×)
+   * during playback: playing, but waiting for data that never comes. A seek to
+   * the same point gets it going again.
+   */
+  useEffect(() => {
+    if (!playing) return
+    let last = -1
+    let nudged = false
+    const timer = setInterval(() => {
+      const element = video.current
+      if (!element || element.paused || element.seeking) return
+      const stuck = element.readyState < HTMLMediaElement.HAVE_FUTURE_DATA && element.currentTime === last
+      last = element.currentTime
+      if (!stuck) {
+        nudged = false
+        return
+      }
+      if (nudged) return
+      nudged = true
+      element.currentTime = element.currentTime
+    }, STALL_CHECK_MS)
+    return () => clearInterval(timer)
+  }, [playing])
+
+  // Closing the review lets go of the file at once, or Windows refuses to rename or delete the session.
+  useEffect(() => {
+    const element = video.current
+    return () => {
+      if (!element) return
+      element.pause()
+      element.removeAttribute('src')
+      element.load()
+    }
+  }, [])
+
   const { metadata } = review
-  const src = mediaUrl(review.folderName, 'recording.mp4')
+  const src = mediaUrl(review.folderName, review.recordingFile ?? 'recording.mp4')
 
   const skip = (deltaMs: number): void => apply({ type: 'skip', deltaMs })
 
@@ -168,11 +231,8 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
             src={src}
             className={`block origin-top-left ${theatre ? 'max-h-[calc(100vh-10rem)]' : 'max-h-[calc(100vh-19rem)]'}`}
             style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})` }}
-            onLoadedMetadata={(event) => {
-              // A recording cut short by a crash can report an unknown (Infinity/NaN) duration.
-              const seconds = event.currentTarget.duration
-              setVideoDurationMs(Number.isFinite(seconds) ? seconds * 1000 : 0)
-            }}
+            onLoadedMetadata={(event) => measureDuration(event.currentTarget)}
+            onDurationChange={(event) => measureDuration(event.currentTarget)}
             onTimeUpdate={(event) => {
               setPositionMs(event.currentTarget.currentTime * 1000)
               report(false)
@@ -296,7 +356,9 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
           <div className="flex gap-2">
             <Button
               variant="outline"
-              onClick={() => void window.api.openNotesWindow()}
+              onClick={() =>
+                window.api.openNotesWindow().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+              }
               title="Your notes, on another monitor"
             >
               <NotebookPen className="size-4" aria-hidden />

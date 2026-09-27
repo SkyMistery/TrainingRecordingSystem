@@ -3,47 +3,43 @@ name: Release
 # Push a tag like v0.1.0 (matching package.json "version") to build the
 # Windows installer and publish it, with the auto-update metadata, to a
 # GitHub Release.
+#
+# Two jobs: "build" runs third-party code (npm install scripts, Vite and its
+# plugins, electron-builder) with no write token at all; "publish" has the
+# token but runs no dependency, only gh on the files the build produced. A
+# compromised dependency can't replace the installer every app updates from.
 on:
   push:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
-# GitHub occasionally starts a tag's workflow twice: queue the runs instead of
-# letting them build and create releases in parallel.
+# GitHub occasionally starts a tag's workflow twice, and two tags pushed
+# together must not race to be "latest": one release run at a time.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
+    permissions:
+      contents: read
     env:
       TAG: ${{ github.ref_name }}
     steps:
-      # A queued duplicate run stops here once the first one has published.
-      - name: Check for a published release
-        id: existing
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
-            echo "Release $TAG is already published: nothing to do."
-            echo "published=true" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.existing.outputs.published != 'true'
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - if: steps.existing.outputs.published != 'true'
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # No token left in .git/config for the steps below.
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           cache: npm
-      # electron-builder publishes under package.json's version: a tag without
-      # the version bump would publish an empty release and break auto-update.
+      # electron-builder names the files after package.json's version: a tag
+      # without the version bump would publish mismatched files and break auto-update.
       - name: Check the tag matches the version
-        if: steps.existing.outputs.published != 'true'
         shell: bash
         run: |
           VERSION="v$(node -p "require('./package.json').version")"
@@ -51,22 +47,58 @@ jobs:
             echo "::error::Tag $TAG does not match package.json version $VERSION"
             exit 1
           fi
-      # No token here: install scripts of dependencies never see it.
+      - run: npm ci
+      - run: npm run typecheck
+      # Builds the installer and latest.yml; nothing is uploaded from here.
+      - run: npm run dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer
+          path: |
+            dist/TrainingRecordingSystem-Setup-*.exe
+            dist/TrainingRecordingSystem-Setup-*.exe.blockmap
+            dist/latest.yml
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      # A queued duplicate run stops here once the first one has published.
+      - name: Check for a published release
+        id: existing
+        run: |
+          if [ "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "Release $TAG is already published: nothing to do."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Only what is on main is released: a tag pushed on another branch stops here.
+      - name: Check the tagged commit is on main
+        if: steps.existing.outputs.published != 'true'
+        run: |
+          STATUS=$(gh api "repos/$REPO/compare/main...$GITHUB_SHA" --jq .status)
+          if [ "$STATUS" != "identical" ] && [ "$STATUS" != "behind" ]; then
+            echo "::error::$TAG ($GITHUB_SHA) is not on main ($STATUS)"
+            exit 1
+          fi
       - if: steps.existing.outputs.published != 'true'
-        run: npm ci
-      - if: steps.existing.outputs.published != 'true'
-        run: npm run typecheck
-      # Create the release up front as a draft: when electron-builder creates it
-      # itself, its parallel uploads can race and produce duplicate releases.
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: installer
+          path: dist
       # A draft left by a failed run is reused (drafts are invisible to the
       # check above), and more than one stops the run.
       - name: Create or reuse the draft release
         if: steps.existing.outputs.published != 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DRAFTS=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id")
+          DRAFTS=$(gh api "repos/$REPO/releases" --paginate --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id")
           COUNT=$(echo "$DRAFTS" | grep -c . || true)
           if [ "$COUNT" -gt 1 ]; then
             echo "::error::$COUNT draft releases exist for $TAG: delete the extra ones and run again"
@@ -74,7 +106,7 @@ jobs:
           fi
           if [ "$COUNT" -eq 0 ]; then
             # The id comes from the answer: a new draft isn't listed right away.
-            DRAFTS=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$TAG" -f name="${TAG#v}" \
+            DRAFTS=$(gh api -X POST "repos/$REPO/releases" -f tag_name="$TAG" -f name="${TAG#v}" \
               -F draft=true -F generate_release_notes=true --jq .id)
           fi
           if [ -z "$DRAFTS" ]; then
@@ -82,35 +114,37 @@ jobs:
             exit 1
           fi
           echo "RELEASE_ID=$DRAFTS" >> "$GITHUB_ENV"
-      - if: steps.existing.outputs.published != 'true'
-        run: npm run release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # Publish only a complete release whose update metadata matches the installer.
-      - name: Check the uploaded files
+      - name: Upload the files
         if: steps.existing.outputs.published != 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${TAG#v}"
           EXE="TrainingRecordingSystem-Setup-$VERSION.exe"
-          ASSETS=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '.assets[] | "\(.name) \(.size)"')
+          for FILE in "$EXE" "$EXE.blockmap" latest.yml; do
+            test -f "dist/$FILE" || { echo "::error::dist/$FILE was not built"; exit 1; }
+          done
+          # --clobber replaces a file left by a failed run; gh finds the draft by its tag.
+          gh release upload "$TAG" "dist/$EXE" "dist/$EXE.blockmap" dist/latest.yml --repo "$REPO" --clobber
+      # Publish only a complete release whose update metadata matches the installer as uploaded.
+      - name: Check the uploaded files
+        if: steps.existing.outputs.published != 'true'
+        run: |
+          VERSION="${TAG#v}"
+          EXE="TrainingRecordingSystem-Setup-$VERSION.exe"
+          ASSETS=$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.assets[] | "\(.name) \(.id)"')
           echo "$ASSETS"
           for NAME in latest.yml "$EXE" "$EXE.blockmap"; do
             echo "$ASSETS" | grep -q "^$NAME " || { echo "::error::$NAME is missing from the release"; exit 1; }
           done
-          LOCAL_SIZE=$(stat -c %s "dist/$EXE")
-          echo "$ASSETS" | grep -q "^$EXE $LOCAL_SIZE$" || { echo "::error::$EXE on the release differs from the build"; exit 1; }
-          LOCAL_SHA=$(node -e "const c=require('crypto'),f=require('fs');console.log(c.createHash('sha512').update(f.readFileSync('dist/$EXE')).digest('base64'))")
-          grep -q "sha512: $LOCAL_SHA" dist/latest.yml || { echo "::error::latest.yml does not match $EXE"; exit 1; }
           # By asset id: tag-based downloads don't see drafts.
-          YML_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '.assets[] | select(.name == "latest.yml") | .id')
-          gh api "repos/$GITHUB_REPOSITORY/releases/assets/$YML_ID" -H "Accept: application/octet-stream" > uploaded-latest.yml
-          cmp uploaded-latest.yml dist/latest.yml || { echo "::error::The uploaded latest.yml differs from the build"; exit 1; }
+          download() {
+            ID=$(echo "$ASSETS" | grep "^$1 " | cut -d' ' -f2)
+            gh api "repos/$REPO/releases/assets/$ID" -H "Accept: application/octet-stream" > "uploaded-$1"
+          }
+          download latest.yml
+          download "$EXE"
+          cmp "uploaded-latest.yml" dist/latest.yml || { echo "::error::The uploaded latest.yml differs from the build"; exit 1; }
+          SHA=$(openssl dgst -sha512 -binary "uploaded-$EXE" | base64 -w0)
+          grep -q "sha512: $SHA" dist/latest.yml || { echo "::error::The uploaded $EXE does not match latest.yml"; exit 1; }
       - name: Publish release
         if: steps.existing.outputs.published != 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false -f make_latest=true
+        run: gh api -X PATCH "repos/$REPO/releases/$RELEASE_ID" -F draft=false -f make_latest=true

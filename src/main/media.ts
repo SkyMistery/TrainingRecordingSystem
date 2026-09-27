@@ -1,17 +1,16 @@
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { realpath, stat } from 'node:fs/promises'
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { protocol } from 'electron'
 import { MEDIA_SCHEME } from '../shared/media'
 import { getSettings } from './settings'
 
+/** What sessions hold that is ever shown: recordings, screenshots, voice notes. Nothing else is served. */
 const CONTENT_TYPES: Record<string, string> = {
   '.mp4': 'video/mp4',
   '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.wav': 'audio/wav',
-  '.json': 'application/json'
+  '.wav': 'audio/wav'
 }
 
 /** Must run before the app is ready. */
@@ -29,6 +28,22 @@ export function sessionFilePath(parts: string[]): string | null {
   const inside = relative(root, file)
   const escapes = inside === '' || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)
   return escapes ? null : file
+}
+
+/**
+ * The file's real place (a junction or link inside the sessions folder may
+ * point anywhere) is inside the sessions folder too, and it is a kind of file
+ * the app shows.
+ */
+export async function isSessionMedia(file: string): Promise<boolean> {
+  if (!(extname(file).toLowerCase() in CONTENT_TYPES)) return false
+  try {
+    const [root, real] = await Promise.all([realpath(getSettings().sessionsDir), realpath(file)])
+    const inside = relative(root, real)
+    return inside !== '' && !inside.startsWith(`..${sep}`) && inside !== '..' && !isAbsolute(inside)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -84,6 +99,8 @@ export function handleMediaScheme(): void {
     }
     const file = sessionFilePath(parts)
     if (!file) return new Response('Forbidden', { status: 403 })
-    return serveFile(file, request.headers.get('range'))
+    return isSessionMedia(file).then((allowed) =>
+      allowed ? serveFile(file, request.headers.get('range')) : new Response('Forbidden', { status: 403 })
+    )
   })
 }

@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdir, rm, unlink, writeFile } from 'node:fs/promises'
-import { basename, join, resolve } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { homedir } from 'node:os'
+import { basename, join, resolve, sep } from 'node:path'
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, screen, shell } from 'electron'
 import type {
   AppState,
   CompanionSettings,
@@ -15,6 +17,7 @@ import type {
   AudioLevels,
   AudioSourceKind,
   CaptureConfig,
+  DisplayOption,
   EncoderId,
   Hotkey,
   Marker,
@@ -29,21 +32,20 @@ import type {
   UpdateState,
   WhisperModelId
 } from '../shared/types'
-import { sameHotkey } from '../shared/hotkey'
-import { RECORDING_CONSENT } from '../shared/terms'
+import { bestMatch, pressMatches } from '../shared/hotkey'
+import { RECORDING_CONSENT, TERMS_VERSION } from '../shared/terms'
 import { isAppPage } from './appPages'
 import { AudioCapture } from './audioWindow'
-import { CompanionServer, newCompanionToken } from './companion'
+import { CompanionServer, type CompanionDevice } from './companion'
 import { sessionFilePath } from './media'
 import { openNotesWindow } from './notesWindow'
-import { GlobalHotkeys } from './hotkeys'
+import { canSimulate, GlobalHotkeys } from './hotkeys'
 import { ObsRecorder } from './recorder/ObsRecorder'
 import type { Recorder } from './recorder/Recorder'
 import {
   adoptRecording,
   createSession,
   findRecordingFile,
-  RECORDING_FILE,
   listSessions,
   loadSession,
   renameSessionFolder,
@@ -54,6 +56,14 @@ import {
 import { decryptSecret, encryptSecret, getSettings, updateSettings } from './settings'
 import { hideStatusWindow, showStatusWindow } from './statusWindow'
 import { Transcriber } from './transcriber'
+import {
+  checkKeyConflicts,
+  validLanguage,
+  validMarkerSettings,
+  validModel,
+  validPlayerCommand,
+  validPttKey
+} from './validate'
 import { WindowMasks } from './windowMasks'
 
 interface ActiveSession {
@@ -62,6 +72,8 @@ interface ActiveSession {
   openRangeId: string | null
   /** Marker numbers are never reused, so a screenshot can't overwrite another's file. */
   nextMarkerNumber: number
+  /** Problems met during this recording, shown until it ends. */
+  warnings: string[]
 }
 
 /** A voice note being dictated (push-to-talk held). */
@@ -78,11 +90,56 @@ interface Dictation {
   limit: NodeJS.Timeout | null
   /** Releases the voice-note hotkey held for a note started from a button. */
   releaseHotkey: (() => void) | null
+  /** Who started it: the hotkey, the app's button, or a Companion device (only it, or the app, ends it). */
+  owner: string
+  /** Started from the hotkey: its key is watched, in case the release never reaches the app. */
+  keyCheck: NodeJS.Timeout | null
 }
 
+/** A push-to-talk key held for a Companion device's button. */
+interface PttHoldState {
+  release: () => void
+  deviceId: string
+  deviceName: string
+  /** The longest it stays pressed (PTT_MAX_MS). */
+  limit: NodeJS.Timeout
+  /** Renewed by the device every second while its button is held (PTT_KEEPALIVE_MS). */
+  keepalive: NodeJS.Timeout
+}
+
+/** Commands from the app's own windows; Companion devices have their own id. */
+const FROM_APP = 'app'
+const FROM_HOTKEY = 'hotkey'
+
+const PTT_NAMES: Record<PttTarget, string> = { voiceChat: 'Voice chat push-to-talk', aurora: 'Aurora push-to-talk' }
+
 const PTT_TARGETS: PttTarget[] = ['voiceChat', 'aurora']
-/** A Companion push-to-talk key is released by itself after this long. */
-const PTT_MAX_MS = 5 * 60_000
+/**
+ * A Companion push-to-talk key is released by itself after this long: one
+ * transmission on the IVAO frequency is short; a voice chat talk may be longer.
+ */
+const PTT_MAX_MS: Record<PttTarget, number> = { aurora: 60_000, voiceChat: 5 * 60_000 }
+/** After that, the button must be released and pressed again, not before this pause. */
+const PTT_PAUSE_MS = 5_000
+/**
+ * The Companion repeats "still holding" every second while a push-to-talk
+ * button is held; without it for this long (phone locked, Wi-Fi gone, page
+ * frozen) the key is released.
+ */
+const PTT_KEEPALIVE_MS = 2_500
+/** A dictation from the hotkey: the key is checked this often, in case its release never reached the app. */
+const KEY_CHECK_MS = 250
+/** Companion markers: faster than this is a script or a stuck button, not a trainer. */
+const MIN_COMPANION_MARKER_MS = 300
+/** Session commands that name a session: from the Companion, only the one recorded or reviewed. */
+const SESSION_SCOPED = new Set<SessionCommandName>([
+  'toggleMarkerCategory',
+  'setMarkerTimes',
+  'deleteMarker',
+  'setNoteText',
+  'deleteNote',
+  'retranscribeNote'
+])
 
 /** Keeps the recording muted a moment longer: the voice trails off after release. */
 const UNMUTE_DELAY_MS = 300
@@ -93,6 +150,10 @@ const MAX_DICTATION_MS = 3 * 60_000
 /** After OBS drops the connection during a recording, try to get it back for a minute. */
 const RECONNECT_DELAY_MS = 5_000
 const RECONNECT_ATTEMPTS = 12
+/** Monitors changed (rearranged, plugged, resolution): read the recorded one again once they settle. */
+const DISPLAY_CHANGE_DELAY_MS = 1_500
+/** The latest warnings of a recording are kept; older ones are dropped. */
+const MAX_WARNINGS = 5
 
 /**
  * Owns the application state. Windows (and later the Companion page) are views:
@@ -103,15 +164,36 @@ export class Controller {
   private readonly windowMasks: WindowMasks
   private readonly hotkeys = new GlobalHotkeys()
   /** Push-to-talk keys held for the Companion's buttons. */
-  private readonly pttHolds = new Map<PttTarget, { release: () => void; limit: NodeJS.Timeout }>()
+  private readonly pttHolds = new Map<PttTarget, PttHoldState>()
+  /** A button that reached its time limit: its device must release it, and wait a moment, before pressing again. */
+  private readonly pttPaused = new Map<PttTarget, { deviceId: string; until: number; mustRelease: boolean }>()
+  /** When each Companion device last added a marker (MIN_COMPANION_MARKER_MS). */
+  private readonly lastCompanionMarker = new Map<string, number>()
   private active: ActiveSession | null = null
   private dictation: Dictation | null = null
   /** Set while a session is being ended (see endSession). */
   private ending: Promise<void> | null = null
   private reconnectTimer: NodeJS.Timeout | null = null
+  private displayTimer: NodeJS.Timeout | null = null
+  /** The hook, OBS and the Companion run (after the terms of use are accepted). */
+  private servicesStarted = false
+  /** A session being started (see startSession). */
+  private starting: Promise<void> | null = null
+  /** Quitting: no new session, no new connection. */
+  private shuttingDown = false
+  /** Whether the main window may be captured (shared on Discord): only while a review is open. */
+  private shareable = false
   private state: AppState
+  /** A finished session whose last save failed: kept until "Save again" works. */
+  private unsaved: { folder: string; session: SessionFile } | null = null
+  /** Voice notes released and still being saved (the session end waits for them). */
+  private readonly savingNotes = new Set<Promise<void>>()
   private readonly store = new SessionStore((folder) =>
-    this.active?.folder === folder ? this.active.session : undefined
+    this.active?.folder === folder
+      ? this.active.session
+      : this.unsaved?.folder === folder
+        ? this.unsaved.session
+        : undefined
   )
   private readonly transcriber: Transcriber
   private readonly audio = new AudioCapture((problem) => {
@@ -124,19 +206,35 @@ export class Controller {
   private readonly companion = new CompanionServer(
     {
       state: () => this.companionState(),
-      execute: (name, args) => this.execute(name, args),
+      execute: (name, args, device) => this.execute(name, args, device),
+      deviceGone: (device) => this.deviceGone(device),
+      paired: (device, address) =>
+        this.patch({
+          notice: {
+            kind: 'warning',
+            title: 'A new device paired with the Companion',
+            message: `${device.name}${address ? ` (${address.replace(/^::ffff:/, '')})` : ''} can now see your notes and use the Companion’s buttons. If it isn’t yours, remove it in Setup → Companion.`
+          }
+        }),
+      mediaAllowed: (folderName, path) => this.companionMayRead(folderName, path),
       changed: () => this.patch({ companion: this.companion.info() })
     },
     () => getSettings().companion,
-    () => getSettings().companionToken
+    {
+      list: () => getSettings().companionDevices ?? [],
+      save: async (companionDevices) => {
+        await updateSettings({ companionDevices })
+      }
+    }
   )
 
   /** Session edits and live actions shared by the desktop windows and the Companion page. */
   private readonly commands: { [K in SessionCommandName]: (...args: SessionCommands[K]) => Promise<void> } = {
     addMarker: () => this.addPointMarker(),
     toggleRange: () => this.toggleRange(),
-    startNote: () => this.startNote(),
-    stopNote: () => this.stopNote(),
+    // Notes and push-to-talk depend on who asks: see execute().
+    startNote: () => this.startNote(FROM_APP),
+    stopNote: () => this.stopNote(FROM_APP),
     toggleMarkerCategory: async (folderName, markerId, categoryId) => {
       await this.editSession(folderName, (session) => {
         const marker = this.findMarker(session, markerId)
@@ -158,6 +256,10 @@ export class Controller {
         const valid = (value: unknown): boolean => value === undefined || Number.isFinite(value)
         if (!times || !valid(times.timeMs) || !(times.endMs === null || valid(times.endMs))) {
           throw new Error('Invalid marker time')
+        }
+        // Only the range being recorded is open: a closed one would never get an end again.
+        if (times.endMs === null && marker.kind === 'range' && this.active?.openRangeId !== markerId) {
+          throw new Error('A range needs an end')
         }
         const limit = session.recording?.durationMs || Number.MAX_SAFE_INTEGER
         const timeMs = Math.round(Math.min(limit, Math.max(0, times.timeMs ?? marker.timeMs)))
@@ -182,12 +284,18 @@ export class Controller {
       this.transcriber.enqueue(this.sessionFolder(folderName), noteId)
     },
     playerCommand: async (command) => this.sendPlayerCommand(command),
-    holdPtt: async (target) => this.holdPtt(target),
-    releasePtt: async (target) => this.releasePtt(target)
+    holdPtt: async () => {
+      throw new Error('Push-to-talk buttons are on the Companion')
+    },
+    releasePtt: async (target) => this.releasePtt(target, FROM_APP)
   }
 
-  /** `onRecordingChanged` lets the main window hide itself from screen capture while recording. */
-  constructor(private readonly onRecordingChanged: (recording: boolean) => void = () => undefined) {
+  /**
+   * `onShareableChanged`: the main window hides itself from screen capture
+   * (OBS, Discord) except while a review is open, the one page meant to be
+   * shared: the sessions list shows other trainees, a recording the notes.
+   */
+  constructor(private readonly onShareableChanged: (shareable: boolean) => void) {
     const settings = getSettings()
     this.transcriber = new Transcriber(this.store, {
       noteChanged: (folder) => void this.sessionChanged(folder),
@@ -200,13 +308,19 @@ export class Controller {
       markerSettings: settings.markers,
       companionSettings: settings.companion,
       sessionsDir: settings.sessionsDir,
+      sessionsDirWarning: sessionsDirWarning(settings.sessionsDir),
       hiddenWindowsError: null,
+      hiddenWindowsFound: [],
       microphoneError: null,
       noteSettings: settings.notes,
       transcription: this.transcriptionState(),
       review: null,
-      companion: { running: false, error: null, urls: [], qr: null, clients: 0, publicNetwork: false },
+      companion: { running: false, error: null, urls: [], qr: null, clients: 0, publicNetwork: false, devices: [] },
       update: null,
+      notice: null,
+      pttHolds: [],
+      stuckKey: null,
+      hotkeysError: null,
       termsAcceptedVersion: settings.termsAccepted?.version ?? null,
       busy: false
     }
@@ -219,15 +333,36 @@ export class Controller {
         onDisconnected: (reason, durationMs) => {
           this.patch({ obs: { status: 'error', error: reason, version: null } })
           if (!this.active) return
-          this.endSession(async () => ({ outputPath: null, durationMs })).catch((error: unknown) =>
+          this.patch({
+            notice: {
+              kind: 'warning',
+              title: 'Connection to OBS lost during the recording',
+              message:
+                'Reconnecting… If OBS is still recording, the session continues (markers made meanwhile are missing).'
+            }
+          })
+          // Not stopped: OBS may still be recording, and the session goes on once it is back.
+          this.endSession(async () => ({ outputPath: null, durationMs, stopped: false })).catch((error: unknown) =>
             console.error(error)
           )
-          // OBS may still be recording (only the connection dropped): reconnect and pick the session up again.
           this.scheduleReconnect(1)
         },
         onLevels: (levels) => this.broadcast('audio:levels', levels),
         onRecordingStopped: (outputPath, durationMs) =>
-          this.endSession(async () => ({ outputPath, durationMs })).catch((error: unknown) => console.error(error))
+          this.endSession(async () => ({ outputPath, durationMs, stopped: true })).then(
+            () =>
+              this.patch({
+                notice: {
+                  kind: 'warning',
+                  title: 'OBS stopped the recording',
+                  message:
+                    'The session was saved. If you didn’t stop it in OBS, check OBS: the disk may be full or the encoder may have failed.'
+                }
+              }),
+            (error: unknown) => console.error(error)
+          ),
+        onWarning: (message) => this.warn(message),
+        onPauseChanged: () => this.publishRecording()
       },
       {
         get: () => getSettings().obsPreviousWorkspace,
@@ -238,7 +373,12 @@ export class Controller {
     this.windowMasks = new WindowMasks(
       this.recorder,
       () => this.state.capture,
-      (hiddenWindowsError) => this.patch({ hiddenWindowsError })
+      (hiddenWindowsError) => {
+        // During a recording the trainer must know at once: private windows may be in the video.
+        if (hiddenWindowsError && this.active) this.feedback('error')
+        this.patch({ hiddenWindowsError })
+      },
+      (hiddenWindowsFound) => this.patch({ hiddenWindowsFound })
     )
   }
 
@@ -248,23 +388,72 @@ export class Controller {
     await this.windowMasks.start()
     this.hotkeys.on('down', (hotkey) => this.onHotkey(hotkey))
     this.hotkeys.on('up', (hotkey) => {
-      if (this.dictation && sameHotkey(hotkey, getSettings().markers.hotkeys.voiceNote)) this.run(() => this.stopNote())
+      const dictation = this.dictation
+      if (dictation?.owner === FROM_HOTKEY && pressMatches(hotkey, getSettings().markers.hotkeys.voiceNote)) {
+        this.run(() => this.stopNote(FROM_HOTKEY))
+      }
     })
+    this.hotkeys.on('stuck', (stuckKey) => {
+      if (stuckKey) {
+        this.feedback('error')
+        this.warn(stuckKey)
+      }
+      this.patch({ stuckKey })
+    })
+    // A monitor rearranged, plugged in or resized moves the recorded one: the masks follow its position.
+    screen.on('display-added', () => this.scheduleDisplayRefresh())
+    screen.on('display-removed', () => this.scheduleDisplayRefresh())
+    screen.on('display-metrics-changed', () => this.scheduleDisplayRefresh())
+    // Locking the PC or putting it to sleep: nothing stays pressed (Aurora would keep transmitting),
+    // and a dictation whose release happens over the lock screen ends.
+    powerMonitor.on('lock-screen', () => this.releaseEverything())
+    powerMonitor.on('suspend', () => this.releaseEverything())
+    // The hook, OBS (it switches OBS to the app's profile) and the Companion only once the terms are accepted.
+    if (getSettings().termsAccepted?.version === TERMS_VERSION) await this.startServices()
+  }
+
+  /** Everything that acts outside the app's own window. */
+  private async startServices(): Promise<void> {
+    if (this.servicesStarted) return
+    this.servicesStarted = true
+    const { companion, markers, notes } = getSettings()
+    // Left down by a run that ended while holding them (a crash): released before anything else.
+    this.hotkeys.releaseIfDown([
+      companion.pttKeys.voiceChat,
+      companion.pttKeys.aurora,
+      notes.holdHotkeyFromButtons ? markers.hotkeys.voiceNote : null
+    ])
     try {
       this.hotkeys.start()
     } catch (error) {
       console.error('Global hotkeys unavailable', error)
+      this.patch({
+        hotkeysError: `Hotkeys don’t work: Windows refused the keyboard hook (${error instanceof Error ? error.message : String(error)}). Restart the app; if it persists, restart Windows.`
+      })
     }
     // Connect silently at startup; the Setup page shows the outcome.
-    void this.connectObs().catch(() => undefined)
-    void this.resumeTranscriptions()
-    // Persist the pairing secret generated on first run.
-    await updateSettings({ companionToken: getSettings().companionToken })
+    // Then leftovers of the last run: after connecting, so a recording OBS is still
+    // writing is continued (reattachRecording) rather than picked up as finished.
+    void this.connectObs()
+      .catch(() => undefined)
+      .finally(() => void this.resumeTranscriptions())
     await this.companion.restart()
   }
 
+  /** Lock screen, sleep, an unexpected error: every key the app holds is released, dictations end. */
+  releaseEverything(): void {
+    for (const target of [...this.pttHolds.keys()]) this.releasePtt(target, FROM_APP)
+    if (this.dictation) this.run(() => this.stopNote(FROM_APP))
+    this.hotkeys.releaseAll()
+  }
+
   isRecording(): boolean {
-    return this.active !== null
+    return this.active !== null || this.starting !== null
+  }
+
+  /** See the constructor: the main window is capturable only while a review is open. */
+  isShareable(): boolean {
+    return this.shareable
   }
 
   setUpdate(update: UpdateState | null): void {
@@ -273,7 +462,11 @@ export class Controller {
 
   /** Each step runs even if an earlier one fails, so OBS still gets the trainer's profile back. */
   async shutdown(): Promise<void> {
+    this.shuttingDown = true
     this.cancelReconnect()
+    // A recording starting right now is stopped once it has started, not left running in OBS.
+    await this.starting?.catch(() => undefined)
+    if (this.displayTimer) clearTimeout(this.displayTimer)
     this.hotkeys.stop()
     await this.stopSession().catch((error: unknown) => console.error('Could not stop the recording', error))
     this.audio.destroy()
@@ -281,6 +474,8 @@ export class Controller {
     await this.companion.stop().catch((error: unknown) => console.error('Could not stop the Companion', error))
     this.windowMasks.stop()
     await this.recorder.disconnect().catch((error: unknown) => console.error('Could not restore OBS', error))
+    // A session whose last save failed gets one more try.
+    await this.saveUnsaved().catch((error: unknown) => console.error('Session still not saved', error))
   }
 
   // ---------------------------------------------------------------------------
@@ -302,6 +497,7 @@ export class Controller {
     })
     handle('obs:connect', async (config: ObsConnectionConfig) => {
       this.refuseWhileRecording()
+      if (this.connecting) throw new Error('Already connecting to OBS: wait a moment')
       const current = getSettings().obs
       await updateSettings({
         obs: {
@@ -358,38 +554,95 @@ export class Controller {
     )
     handle('session:start', (metadata: SessionMetadata, consent: boolean) => this.startSession(metadata, consent))
     handle('terms:accept', async (version: number) => {
-      if (!Number.isInteger(version)) throw new Error('Invalid terms version')
+      if (version !== TERMS_VERSION) throw new Error('Invalid terms version')
       await updateSettings({ termsAccepted: { version, acceptedAt: new Date().toISOString() } })
       this.patch({ termsAcceptedVersion: version })
+      await this.startServices()
     })
     handle('session:stop', () => this.stopSession())
+    handle('notice:dismiss', () => this.patch({ notice: null }))
+    handle('notice:retry', () => this.saveUnsaved())
 
-    handle('command', (name: SessionCommandName, args: unknown[]) => this.execute(name, args))
-    handle('markers:saveSettings', async (patch: Partial<MarkerSettings>) => {
-      const markers: MarkerSettings = { ...getSettings().markers, ...patch }
+    handle('command', (name: SessionCommandName, args: unknown[]) => this.execute(name, args, null))
+    handle('markers:saveSettings', async (patch: unknown) => {
+      const markers: MarkerSettings = { ...getSettings().markers, ...validMarkerSettings(patch) }
+      checkKeyConflicts(getSettings().companion.pttKeys, markers.hotkeys.voiceNote)
+      const { holdHotkeyFromButtons } = getSettings().notes
+      if (holdHotkeyFromButtons && markers.hotkeys.voiceNote && !canSimulate(markers.hotkeys.voiceNote)) {
+        throw new Error(
+          `${markers.hotkeys.voiceNote.label} can’t be pressed by the app: choose another voice-note key, or turn off holding it for buttons`
+        )
+      }
       await updateSettings({ markers })
       this.patch({ markerSettings: markers })
     })
     handle('notes:saveSettings', async (patch: Partial<NoteSettings>) => {
+      if (patch.model !== undefined) validModel(patch.model)
+      if (patch.language !== undefined) validLanguage(patch.language)
+      if (patch.vocabulary !== undefined && (typeof patch.vocabulary !== 'string' || patch.vocabulary.length > 2000)) {
+        throw new Error('Invalid vocabulary')
+      }
       const notes: NoteSettings = { ...getSettings().notes, ...patch }
+      const voiceNote = getSettings().markers.hotkeys.voiceNote
+      if (notes.holdHotkeyFromButtons && voiceNote && !canSimulate(voiceNote)) {
+        throw new Error(`${voiceNote.label} can’t be pressed by the app: choose another voice-note key first`)
+      }
       await updateSettings({ notes })
       this.patch({ noteSettings: notes })
       // A different model or language may unblock notes waiting for one.
       if (this.active) await this.transcriber.resume(this.active.folder, this.active.session)
     })
-    handle('models:download', (model: WhisperModelId) => this.transcriber.downloadModel(model))
+    handle('models:download', (model: WhisperModelId) => this.transcriber.downloadModel(validModel(model)))
     handle('models:cancelDownload', () => this.transcriber.cancelDownload())
     handle('review:open', (folderName: string) => this.openReview(folderName))
-    handle('review:close', () => this.patch({ review: null }))
+    handle('review:close', () => {
+      // Push-to-talk buttons work during a recording or a review only.
+      if (!this.active) for (const target of [...this.pttHolds.keys()]) this.releasePtt(target, FROM_APP)
+      this.patch({ review: null })
+    })
+    // A recording picked up after a crash has no duration: the player tells it from the video itself.
+    handle('review:duration', async (folderName: string, durationMs: number) => {
+      const review = this.state.review
+      if (!review || review.folderName !== folderName || review.durationMs > 0) return
+      if (!Number.isFinite(durationMs) || durationMs <= 0 || durationMs > 48 * 3_600_000) return
+      const length = Math.round(durationMs)
+      const session = await this.store.update(this.sessionFolder(folderName), (current) => {
+        if (current.recording && !current.recording.durationMs) current.recording.durationMs = length
+        // Ranges left open by the crash end with the recording.
+        for (const marker of current.markers) {
+          if (marker.kind === 'range' && marker.endMs === null) marker.endMs = Math.max(marker.timeMs, length)
+        }
+      })
+      if (this.state.review?.folderName === folderName) {
+        this.patch({ review: { ...this.state.review, durationMs: length, markers: structuredClone(session.markers) } })
+      }
+      this.broadcast('sessions:changed', null)
+    })
     handle('player:report', (player: PlayerState) => {
-      if (this.state.review) this.patch({ review: { ...this.state.review, player } })
+      const review = this.state.review
+      if (!review) return
+      // Several times a second: the position alone goes to the devices, not the whole state to every window.
+      this.state = { ...this.state, review: { ...review, player } }
+      this.companion.sendPlayer(player)
     })
     handle('companion:save', async (patch: Partial<CompanionSettings>) => {
       const previous = getSettings().companion
       const companion: CompanionSettings = { ...previous, ...patch }
+      if (patch.pttKeys) {
+        companion.pttKeys = {
+          voiceChat: validPttKey('voiceChat', patch.pttKeys.voiceChat),
+          aurora: validPttKey('aurora', patch.pttKeys.aurora)
+        }
+        checkKeyConflicts(companion.pttKeys, getSettings().markers.hotkeys.voiceNote)
+      }
+      if (!Number.isInteger(companion.port) || companion.port < 1024 || companion.port > 65535) {
+        throw new Error('The port must be a number from 1024 to 65535')
+      }
+      companion.enabled = Boolean(companion.enabled)
+      companion.lan = Boolean(companion.lan)
       await updateSettings({ companion })
       this.patch({ companionSettings: companion })
-      if (patch.pttKeys) for (const target of [...this.pttHolds.keys()]) this.releasePtt(target)
+      if (patch.pttKeys) for (const target of [...this.pttHolds.keys()]) this.releasePtt(target, FROM_APP)
       // Only these need the server restarted, which disconnects the devices.
       if (
         companion.enabled !== previous.enabled ||
@@ -399,18 +652,20 @@ export class Controller {
         await this.companion.restart()
       }
     })
-    handle('companion:newToken', async () => {
-      // Unpairs every device: they need the new link or QR code.
-      await updateSettings({ companionToken: newCompanionToken() })
-      await this.companion.restart()
-    })
+    // Every device must pair again (a lost phone, a link seen by someone else).
+    handle('companion:unpairAll', () => this.companion.removeDevices('all'))
+    handle('companion:removeDevice', (id: string) => this.companion.removeDevices([String(id)]))
+    // The PC's "Release" next to a push-to-talk key held for a device.
+    handle('companion:releasePtt', (target: PttTarget) => this.releasePtt(target, FROM_APP))
     handle('companion:refresh', () => this.companion.refreshNetwork())
     handle('companion:openWindow', () =>
-      openNotesWindow(this.requireCompanion().pairUrl(), this.state.capture.display?.name)
+      openNotesWindow(this.requireCompanion().localPage(), this.state.capture.display?.name)
     )
     handle('companion:openBrowser', () => shell.openExternal(this.requireCompanion().pairUrl()))
-    handle('hotkeys:capture', (modifiersAlone?: boolean) => this.hotkeys.captureNext(modifiersAlone === true))
-    handle('hotkeys:cancelCapture', () => this.hotkeys.cancelCapture())
+    handle('hotkeys:capture', (id: string, modifiersAlone?: boolean) =>
+      this.hotkeys.captureNext(String(id), modifiersAlone === true)
+    )
+    handle('hotkeys:cancelCapture', (id: string) => this.hotkeys.cancelCapture(String(id)))
   }
 
   /** The pairing link must not go to another program that took the Companion's port. */
@@ -431,11 +686,33 @@ export class Controller {
 
   private scheduleReconnect(attempt: number): void {
     this.cancelReconnect()
-    if (attempt > RECONNECT_ATTEMPTS) return
+    if (attempt > RECONNECT_ATTEMPTS) {
+      this.patch({
+        notice: {
+          kind: 'error',
+          title: 'Could not reconnect to OBS',
+          message:
+            'The session is saved up to the lost connection. If OBS went on recording, stop it in OBS: its file is added to the session when you open it.'
+        }
+      })
+      return
+    }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       if (this.recorder.isConnected() || this.state.obs.status === 'connecting') return
-      this.connectObs().catch(() => this.scheduleReconnect(attempt + 1))
+      this.connectObs().then(
+        () =>
+          this.patch({
+            notice: this.active
+              ? { kind: 'info', title: 'Connection to OBS is back', message: 'The recording continues.' }
+              : {
+                  kind: 'warning',
+                  title: 'Reconnected to OBS',
+                  message: 'OBS was no longer recording: the session is saved up to the lost connection.'
+                }
+          }),
+        () => this.scheduleReconnect(attempt + 1)
+      )
     }, RECONNECT_DELAY_MS)
   }
 
@@ -444,7 +721,18 @@ export class Controller {
     this.reconnectTimer = null
   }
 
-  private async connectObs(): Promise<void> {
+  /** One connection attempt at a time (two would close each other's socket); a second request joins it. */
+  private connecting: Promise<void> | null = null
+
+  private connectObs(): Promise<void> {
+    this.connecting ??= this.doConnectObs().finally(() => {
+      this.connecting = null
+    })
+    return this.connecting
+  }
+
+  private async doConnectObs(): Promise<void> {
+    if (this.shuttingDown) throw new Error('The app is closing')
     this.cancelReconnect()
     await this.recorder.disconnect().catch(() => undefined)
     this.patch({ obs: { status: 'connecting', error: null, version: null } })
@@ -456,37 +744,89 @@ export class Controller {
       throw new Error(describeObsError(error))
     }
     await this.reattachRecording().catch((error: unknown) => console.error('Could not resume the recording', error))
+    // The monitors may have been rearranged since the app last talked to OBS.
+    await this.refreshDisplay().catch((error: unknown) =>
+      console.warn('Recorded monitor not checked:', error instanceof Error ? error.message : error)
+    )
     // Applied again before every recording, so a failure here isn't fatal.
     if (this.state.capture.display && !this.active) {
       await this.withBusy(() => this.recorder.configure(this.state.capture)).catch((error: unknown) =>
         console.warn('Capture settings not applied yet:', error instanceof Error ? error.message : error)
       )
     }
+    // A recording started in OBS itself must not land in an old session's folder.
+    if (!this.active) await this.recorder.resetOutputDir(getSettings().sessionsDir).catch(() => undefined)
+  }
+
+  private scheduleDisplayRefresh(): void {
+    if (this.displayTimer) clearTimeout(this.displayTimer)
+    this.displayTimer = setTimeout(() => {
+      this.displayTimer = null
+      this.refreshDisplay().catch((error: unknown) =>
+        console.warn('Recorded monitor not checked:', error instanceof Error ? error.message : error)
+      )
+    }, DISPLAY_CHANGE_DELAY_MS)
+  }
+
+  /**
+   * Reads the recorded monitor from OBS again: its name carries its position
+   * ("@ x,y"), which the masks need, and changes when monitors are rearranged
+   * even if the monitor and its resolution stay the same.
+   */
+  private async refreshDisplay(): Promise<void> {
+    const current = this.state.capture.display
+    if (!current || !this.recorder.isConnected()) return
+    const display = (await this.recorder.listDisplays()).find((item) => item.id === current.id)
+    if (!display) return // unplugged: Start says so
+    // While recording OBS keeps the size it started with; the position is what the masks follow.
+    const next = this.active ? { ...current, name: display.name } : display
+    if (sameDisplay(next, current)) return
+    console.info(`Recorded monitor is now “${next.name}” (was “${current.name}”)`)
+    const capture = { ...this.state.capture, display: next }
+    this.patch({ capture })
+    await updateSettings({ capture })
   }
 
   // --- Sessions ------------------------------------------------------------------
 
-  private async startSession(metadata: SessionMetadata, consent: boolean): Promise<void> {
+  private startSession(metadata: SessionMetadata, consent: boolean): Promise<void> {
+    if (this.starting) return Promise.reject(new Error('The recording is starting'))
+    // Counted as recording from now: quitting asks first, and waits for the start to stop it.
+    this.starting = this.doStartSession(metadata, consent).finally(() => {
+      this.starting = null
+    })
+    return this.starting
+  }
+
+  private async doStartSession(metadata: SessionMetadata, consent: boolean): Promise<void> {
+    if (this.shuttingDown) throw new Error('The app is closing')
     if (this.active || this.ending) throw new Error('A session is already being recorded')
+    if (getSettings().termsAccepted?.version !== TERMS_VERSION) throw new Error('Accept the terms of use first')
     // IVAO Rule 2.1.12: no recording of a voice conversation without its participants' consent.
     if (consent !== true) throw new Error('Confirm that everyone in the voice call agreed to be recorded')
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(metadata?.date ?? ''))) throw new Error('Enter the date of the session')
+    metadata = validMetadata(metadata)
     const recorder = this.requireObs()
     let capture = this.state.capture
     if (!capture.display) throw new Error('Choose the display to record in Setup first')
 
     await this.withBusy(async () => {
-      // The monitor may have been unplugged or changed resolution since Setup.
+      // The monitor may have been unplugged, resized or moved (its position, for the masks) since Setup.
       const display = (await recorder.listDisplays()).find((item) => item.id === capture.display!.id)
       if (!display) throw new Error('The monitor chosen in Setup is not connected: choose it again in Setup')
-      if (display.width !== capture.display!.width || display.height !== capture.display!.height) {
+      if (!sameDisplay(display, capture.display!)) {
         capture = { ...capture, display }
         this.patch({ capture })
         await updateSettings({ capture })
       }
       await recorder.configure(capture)
+      // Private windows covered before the first frame. A problem is shown (and heard) but doesn't stop the session.
+      await this.windowMasks.refreshNow().catch(() => undefined)
       const { folder, session } = await createSession(getSettings().sessionsDir, metadata)
-      session.consent = { statement: RECORDING_CONSENT, confirmedAt: new Date().toISOString() }
+      session.consent = {
+        statement: RECORDING_CONSENT,
+        confirmedAt: new Date().toISOString(),
+        termsVersion: TERMS_VERSION
+      }
       try {
         await recorder.start(folder)
       } catch (error) {
@@ -509,8 +849,15 @@ export class Controller {
   /** Makes a session the one being recorded (a new one, or one picked up again after a lost connection). */
   private async activate(folder: string, session: SessionFile): Promise<void> {
     const lastNumber = Math.max(0, ...session.markers.map((marker) => marker.number))
-    this.active = { folder, session, openRangeId: null, nextMarkerNumber: lastNumber + 1 }
-    this.onRecordingChanged(true)
+    // A range left open when the connection dropped is still open.
+    const openRange = session.markers.findLast((marker) => marker.kind === 'range' && marker.endMs === null)
+    this.active = {
+      folder,
+      session,
+      openRangeId: openRange?.id ?? null,
+      nextMarkerNumber: lastNumber + 1,
+      warnings: []
+    }
     await this.persist()
     // Kept open for the whole session so push-to-talk starts instantly.
     const { micDeviceId, micLabel } = getSettings().notes
@@ -526,16 +873,25 @@ export class Controller {
    * recording one of the sessions: continue it instead of leaving it orphaned.
    */
   private async reattachRecording(): Promise<void> {
-    if (this.active || this.ending) return
+    // The session is still being closed after the connection dropped: continue it once that is done.
+    if (this.ending) await this.ending.catch(() => undefined)
+    if (this.active) return
     const running = await this.recorder.recordingInProgress()
     if (!running) return
     const folder = sessionFilePath([basename(running.outputDir)])
     if (!folder || folder.toLowerCase() !== resolve(running.outputDir).toLowerCase()) return
-    const session = await loadSession(folder).catch(() => null)
-    if (!session?.recording) return
+    const session = await this.store.read(folder).catch(() => null)
+    const recording = session?.recording
+    // Only a recording that never stopped. OBS recording into a finished session's
+    // folder (started from OBS) is something else, and must not replace its video.
+    if (!session || !recording || recording.endedAt || recording.file !== null) return
     console.info(`Continuing the recording of ${basename(folder)}`)
     this.recorder.continueRecording(running.durationMs)
     await this.activate(folder, session)
+    // A dictation cut off by the lost connection may have left a microphone muted in OBS.
+    for (const source of this.state.capture.audioSources) {
+      await this.recorder.setMuted(source.id, source.muted).catch(() => undefined)
+    }
   }
 
   /**
@@ -543,12 +899,19 @@ export class Controller {
    * (OBS crashed, the connection was lost, the file was busy) is picked up
    * when the session is opened or the app starts.
    */
-  private async recoverRecording(folder: string): Promise<void> {
+  private async recoverRecording(folder: string, opening = false): Promise<void> {
     if (this.active?.folder === folder) return
-    const session = await loadSession(folder)
+    const session = await this.store.read(folder)
     const recording = session.recording
-    if (!recording || recording.file === RECORDING_FILE) return
-    const found = await findRecordingFile(folder, recording.file)
+    if (!recording || recording.file !== null) return
+    // Never stopped (lost connection, crash): OBS may still be writing it, and the
+    // session continues once OBS is back. Only the trainer opening it takes the file now.
+    if (!recording.endedAt && !opening) {
+      if (!this.recorder.isConnected()) return
+      const running = await this.recorder.recordingInProgress().catch(() => null)
+      if (running && resolve(running.outputDir).toLowerCase() === folder.toLowerCase()) return
+    }
+    const found = await findRecordingFile(folder)
     if (!found) return
     const file = await adoptRecording(folder, found)
     await this.store.update(folder, (current) => {
@@ -562,11 +925,11 @@ export class Controller {
     return this.endSession(async () => {
       const durationMs = this.recorder.currentTimeMs()
       try {
-        return { outputPath: await this.recorder.stop(), durationMs }
+        return { outputPath: await this.recorder.stop(), durationMs, stopped: true }
       } catch (error) {
         // Still finalise: the session must not stay open with OBS in an unknown state.
         console.error('OBS did not stop the recording cleanly', error)
-        return { outputPath: null, durationMs }
+        return { outputPath: null, durationMs, stopped: false }
       }
     })
   }
@@ -577,55 +940,99 @@ export class Controller {
    * the first. Markers, notes and hotkeys are refused from the start, so none
    * land in a session that is being closed.
    */
-  private endSession(stop: () => Promise<{ outputPath: string | null; durationMs?: number }>): Promise<void> {
+  /**
+   * `stopped`: OBS confirmed the recording stopped. After a lost connection it
+   * may still be recording: the session then stays open to be continued.
+   */
+  private endSession(
+    stop: () => Promise<{ outputPath: string | null; durationMs?: number; stopped: boolean }>
+  ): Promise<void> {
     if (this.ending) return this.ending
     const active = this.active
     if (!active) return Promise.resolve()
     this.ending = this.withBusy(async () => {
       try {
-        const { outputPath, durationMs } = await stop()
-        await this.finaliseSession(active, outputPath, durationMs)
+        const { outputPath, durationMs, stopped } = await stop()
+        await this.finaliseSession(active, outputPath, durationMs, stopped)
       } finally {
         this.active = null
         this.ending = null
-        this.onRecordingChanged(false)
         this.patch({ recording: null })
+        // Push-to-talk buttons work during a recording or a review only.
+        if (!this.state.review) this.releaseAllPtt()
         this.broadcast('sessions:changed', null)
+        // Stopped from OBS itself: OBS's own folder still points into this session.
+        void this.recorder.resetOutputDir(getSettings().sessionsDir).catch(() => undefined)
       }
     })
     return this.ending
   }
 
   /** Stores the recording in the session folder and saves the session a last time. */
-  private async finaliseSession(active: ActiveSession, outputPath: string | null, durationMs?: number): Promise<void> {
-    if (this.dictation) await this.stopNote().catch(() => undefined)
+  private async finaliseSession(
+    active: ActiveSession,
+    outputPath: string | null,
+    durationMs: number | undefined,
+    stopped: boolean
+  ): Promise<void> {
+    if (this.dictation) await this.stopNote(FROM_APP).catch(() => undefined)
+    // A note released just before the end is still being saved: its audio must not be cut off.
+    await Promise.all([...this.savingNotes]).catch(() => undefined)
     this.audio.close()
     hideStatusWindow()
     const recording = active.session.recording
     if (recording) {
       recording.durationMs = Math.round(durationMs ?? Date.now() - Date.parse(recording.startedAt))
-      // Without a path from OBS (crash, lost connection) the file is looked for in the folder.
-      const file = outputPath ?? (await findRecordingFile(active.folder, null))
-      if (file) {
-        try {
-          recording.file = await adoptRecording(active.folder, file)
-        } catch (error) {
-          // Still busy (e.g. OBS still writing it): recovered when the session is opened.
-          console.error('Could not move the recording into the session folder', error)
+      if (stopped) {
+        recording.endedAt = new Date().toISOString()
+        // Without a path from OBS (it failed) the file is looked for in the folder.
+        const file = outputPath ?? (await findRecordingFile(active.folder))
+        if (file) {
+          try {
+            recording.file = await adoptRecording(active.folder, file)
+          } catch (error) {
+            // Still busy: recovered when the session is opened.
+            console.error('Could not move the recording into the session folder', error)
+          }
         }
       }
-      // A range still open when recording stops ends with the recording.
+      // Not stopped (connection lost): OBS may still be writing the file. The
+      // session is continued if it is, or its file is picked up later.
+      // A range still open when recording stops ends with the recording (kept open if it may continue).
       const open = active.session.markers.find((marker) => marker.id === active.openRangeId)
-      if (open) open.endMs = Math.max(open.timeMs, recording.durationMs)
+      if (open && stopped) open.endMs = Math.max(open.timeMs, recording.durationMs)
     }
+    // Kept in memory until it is saved: "Save again" (in the notice) retries.
+    this.unsaved = { folder: active.folder, session: active.session }
     try {
       await this.store.update(active.folder, () => undefined)
+      this.unsaved = null
     } catch (error) {
       console.error('Could not save the session', error)
-      throw new Error(
-        'The recording stopped, but the session file could not be saved. Close any program using the session folder and restart the app.'
-      )
+      this.patch({
+        notice: {
+          kind: 'error',
+          title: 'The session file could not be saved',
+          message: `The recording stopped, but the markers and notes of ${basename(active.folder)} are not saved yet: ${describeFileError(error)}. Close any program using the session folder, then save again. Don’t close the app before.`,
+          retry: 'saveSession'
+        }
+      })
+      throw new Error('The recording stopped, but the session file could not be saved.')
     }
+  }
+
+  /** "Save again" in the notice after the final save failed. */
+  private async saveUnsaved(): Promise<void> {
+    const unsaved = this.unsaved
+    if (!unsaved) return
+    try {
+      await this.store.update(unsaved.folder, () => undefined)
+    } catch (error) {
+      throw new Error(`Still not saved: ${describeFileError(error)}.`)
+    }
+    this.unsaved = null
+    this.patch({ notice: null })
+    this.broadcast('sessions:changed', null)
   }
 
   /** New sessions go to the chosen folder; existing ones stay where they are (move them by hand). */
@@ -642,7 +1049,7 @@ export class Controller {
     const chosen = result.filePaths[0]
     if (result.canceled || !chosen) return
     await updateSettings({ sessionsDir: chosen })
-    this.patch({ sessionsDir: chosen })
+    this.patch({ sessionsDir: chosen, sessionsDirWarning: sessionsDirWarning(chosen) })
     this.broadcast('sessions:changed', null)
     void this.resumeTranscriptions()
   }
@@ -661,7 +1068,7 @@ export class Controller {
     } catch (error) {
       console.error('Could not delete the session', error)
       throw new Error(
-        'Could not move the session to the Recycle Bin. Close any program using its files and try again. On a network drive there is no Recycle Bin: delete the folder from File Explorer instead.'
+        'Windows could not move the session to the Recycle Bin. A program may be using its files (close it and try again), the drive may have no Recycle Bin (network or some USB drives), or the recording may be too big for it. You can delete the folder from File Explorer instead (Open the session folder).'
       )
     }
     this.broadcast('sessions:changed', null)
@@ -702,6 +1109,18 @@ export class Controller {
     } catch (error) {
       console.error('Could not save the session details', error)
       if (error instanceof SessionRenameError) target = error.folder
+      if (session && target !== folder) {
+        // The session folder has its new name already: the dialog must not keep the old one.
+        this.patch({
+          notice: {
+            kind: 'warning',
+            title: 'Details saved, screenshots folder not renamed',
+            message:
+              'Close any program using the session’s screenshots (File Explorer, an image viewer), then save the details again to rename it.'
+          }
+        })
+        return basename(target)
+      }
       throw new Error(
         session
           ? 'The details are saved, but the folder could not be renamed. Close any program using its files (e.g. File Explorer or a video player) and save again.'
@@ -735,24 +1154,39 @@ export class Controller {
     if (!active) return
     this.patch({
       recording: {
-        sessionId: active.session.id,
         metadata: active.session.metadata,
         elapsedMs: this.recorder.currentTimeMs(),
         sampledAt: Date.now(),
         folderName: basename(active.folder),
         markers: active.session.markers.map((marker) => ({ ...marker })),
         openRangeId: active.openRangeId,
-        dictatingMarkerId: this.dictation?.markerId ?? null
+        dictatingMarkerId: this.dictation?.markerId ?? null,
+        warnings: [...active.warnings],
+        paused: this.recorder.isPaused()
       }
     })
   }
 
+  /** Shows a problem of the recording in progress (app, status window, Companion) with the error tone. */
+  private warn(message: string): void {
+    console.warn('Recording:', message)
+    const active = this.active
+    if (!active) return
+    active.warnings = [...active.warnings.filter((item) => item !== message), message].slice(-MAX_WARNINGS)
+    this.feedback('error')
+    this.publishRecording()
+  }
+
+  /** Saves the session being recorded; everything stays in memory if it fails, and the next save retries. */
   private async persist(): Promise<void> {
     const active = this.active
     if (!active) return
     await this.store
       .update(active.folder, () => undefined)
-      .catch((error: unknown) => console.error('Could not save the session', error))
+      .catch((error: unknown) => {
+        console.error('Could not save the session', error)
+        this.warn(`The session file could not be saved (${describeFileError(error)}): the next change tries again.`)
+      })
   }
 
   // --- Markers -------------------------------------------------------------------
@@ -767,16 +1201,14 @@ export class Controller {
   private onHotkey(hotkey: Hotkey): void {
     if (!this.active || this.ending) return
     const { hotkeys, categories } = getSettings().markers
-    if (sameHotkey(hotkey, hotkeys.marker)) {
-      this.run(() => this.addPointMarker())
-    } else if (sameHotkey(hotkey, hotkeys.range)) {
-      this.run(() => this.toggleRange())
-    } else if (sameHotkey(hotkey, hotkeys.voiceNote)) {
-      this.run(() => this.startNote(true))
-    } else {
-      const category = categories.find((item) => sameHotkey(hotkey, item.hotkey))
-      if (category) this.run(() => this.tagLatestMarker(category.id))
-    }
+    // Extra modifiers don't stop a hotkey: the trainer may be talking (Right Ctrl, AltGr) while pressing it.
+    const action = bestMatch<() => Promise<void>>(hotkey, [
+      { binding: hotkeys.marker, value: () => this.addPointMarker() },
+      { binding: hotkeys.range, value: () => this.toggleRange() },
+      { binding: hotkeys.voiceNote, value: () => this.startNote(FROM_HOTKEY) },
+      ...categories.map((category) => ({ binding: category.hotkey, value: () => this.tagLatestMarker(category.id) }))
+    ])
+    if (action) this.run(action)
   }
 
   private newMarker(active: ActiveSession, kind: Marker['kind']): Marker {
@@ -873,10 +1305,9 @@ export class Controller {
       (file): file is string => !!file
     )
     // An accidental push-to-talk tap (force) leaves nothing worth keeping in the Recycle Bin.
-    for (const file of files) {
-      if (force) await unlink(join(folder, file)).catch(() => undefined)
-      else await this.discard(join(folder, file))
-    }
+    if (force) {
+      for (const file of files) await unlink(join(folder, file)).catch(() => undefined)
+    } else await this.discard(files.map((file) => join(folder, file)))
   }
 
   // --- Voice notes -----------------------------------------------------------------
@@ -884,10 +1315,11 @@ export class Controller {
   /**
    * Push-to-talk pressed: the note goes to the open range, or to the latest
    * marker if it is recent enough; otherwise a new marker is created for it.
-   * `fromHotkey`: the trainer is holding the hotkey; otherwise (a button in the
-   * app or the Companion) the hotkey may be held for them, for Discord's push-to-mute.
+   * `owner`: FROM_HOTKEY (the trainer holds the hotkey), FROM_APP (the app's
+   * button) or a Companion device; only it, or the app, ends the note. From a
+   * button, the hotkey may be held for the trainer (Discord's push-to-mute).
    */
-  private async startNote(fromHotkey = false): Promise<void> {
+  private async startNote(owner: string): Promise<void> {
     const active = this.requireActive()
     if (this.dictation) return
     const now = Math.round(this.recorder.currentTimeMs())
@@ -903,11 +1335,16 @@ export class Controller {
       createdMarker: !marker,
       mutedSourceIds: [],
       started: Promise.resolve(),
-      limit: setTimeout(() => {
-        if (this.dictation === dictation) this.run(() => this.stopNote())
-      }, MAX_DICTATION_MS),
-      releaseHotkey: fromHotkey ? null : this.holdVoiceNoteHotkey()
+      limit: null,
+      // Fails if the key can't be pressed: the note would then be heard in the voice chat.
+      releaseHotkey: owner === FROM_HOTKEY ? null : this.holdVoiceNoteHotkey(),
+      owner,
+      keyCheck: null
     }
+    dictation.limit = setTimeout(() => {
+      if (this.dictation === dictation) this.run(() => this.stopNote(FROM_APP))
+    }, MAX_DICTATION_MS)
+    if (owner === FROM_HOTKEY) dictation.keyCheck = this.watchNoteKey(dictation)
     // The release can arrive before this finishes: stopNote waits for `started`.
     dictation.started = (async () => {
       // Start capturing before anything slower (screenshot, OBS calls).
@@ -924,8 +1361,12 @@ export class Controller {
       const toMute = this.state.capture.audioSources.filter((source) => source.muteDuringNotes && !source.muted)
       for (const source of toMute) {
         if (this.dictation !== dictation) break // already released
-        await this.recorder.setMuted(source.id, true).catch(() => undefined)
-        dictation.mutedSourceIds.push(source.id)
+        try {
+          await this.recorder.setMuted(source.id, true)
+          dictation.mutedSourceIds.push(source.id)
+        } catch {
+          this.warn(`OBS did not mute “${source.label}”: this voice note is in the recording.`)
+        }
       }
     })()
     this.dictation = dictation
@@ -933,13 +1374,43 @@ export class Controller {
       await dictation.started
     } catch (error) {
       if (this.dictation === dictation) this.dictation = null
+      this.endDictationTimers(dictation)
       dictation.releaseHotkey?.()
       this.publishRecording()
       throw error
     }
   }
 
-  /** Holds the voice-note hotkey if the trainer asked for it; returns its release. */
+  /**
+   * The hotkey's release may never reach the app (it happened over the lock
+   * screen, or in a program running as administrator): the key itself is
+   * checked, and the note ends once it is up.
+   */
+  private watchNoteKey(dictation: Dictation): NodeJS.Timeout | null {
+    const hotkey = getSettings().markers.hotkeys.voiceNote
+    if (!hotkey) return null
+    let upChecks = 0
+    return setInterval(() => {
+      if (this.dictation !== dictation) return
+      upChecks = this.hotkeys.isDown(hotkey) ? 0 : upChecks + 1
+      // Twice in a row: a normal release reaches the hook first.
+      if (upChecks >= 2) {
+        this.hotkeys.forgetHeld(hotkey)
+        this.run(() => this.stopNote(FROM_HOTKEY))
+      }
+    }, KEY_CHECK_MS)
+  }
+
+  private endDictationTimers(dictation: Dictation): void {
+    if (dictation.limit) clearTimeout(dictation.limit)
+    if (dictation.keyCheck) clearInterval(dictation.keyCheck)
+  }
+
+  /**
+   * Holds the voice-note hotkey if the trainer asked for it; returns its
+   * release. Throws if it can't be pressed: the note isn't started then, or
+   * Discord wouldn't mute the trainer and the trainee would hear it.
+   */
   private holdVoiceNoteHotkey(): (() => void) | null {
     const hotkey = getSettings().markers.hotkeys.voiceNote
     if (!hotkey || !getSettings().notes.holdHotkeyFromButtons) return null
@@ -947,24 +1418,41 @@ export class Controller {
       return this.hotkeys.hold(hotkey)
     } catch (error) {
       console.error('Could not hold the voice note hotkey', error)
-      return null
+      this.feedback('error')
+      throw new Error(
+        `The note was not started, so that it isn’t heard in the voice chat: ${error instanceof Error ? error.message : String(error)}`
+      )
     }
   }
 
-  private async stopNote(): Promise<void> {
+  /** Push-to-talk released. `from`: who asks (see startNote); another Companion device can't end this note. */
+  private async stopNote(from: string): Promise<void> {
     const dictation = this.dictation
     const active = this.active
     if (!dictation || !active) return
+    const fromDevice = from !== FROM_APP && from !== FROM_HOTKEY
+    if (fromDevice && from !== dictation.owner) return
+    if (from === FROM_HOTKEY && dictation.owner !== FROM_HOTKEY) return
     this.dictation = null
-    if (dictation.limit) clearTimeout(dictation.limit)
+    this.endDictationTimers(dictation)
     dictation.releaseHotkey?.()
     this.publishRecording()
     this.feedback('noteEnd')
+    // Tracked: the end of the session waits for the audio before closing the microphone.
+    const saving = this.saveNote(active, dictation)
+    this.savingNotes.add(saving)
+    try {
+      await saving
+    } finally {
+      this.savingNotes.delete(saving)
+    }
+  }
+
+  private async saveNote(active: ActiveSession, dictation: Dictation): Promise<void> {
     const started = await dictation.started.then(
       () => true,
       () => false
     )
-
     setTimeout(() => {
       for (const id of dictation.mutedSourceIds) {
         // Only if the trainer didn't mute it on purpose meanwhile.
@@ -975,7 +1463,12 @@ export class Controller {
     if (!started) return
 
     const audio = await this.audio.stop(dictation.token)
-    if (!audio) {
+    if (audio === 'failed') {
+      // Not a tap: the microphone window didn't answer. The marker stays; the problem is shown.
+      this.warn('A voice note was lost: the microphone didn’t answer. Check the microphone in Setup → Voice notes.')
+      return
+    }
+    if (audio === 'tap') {
       // An accidental tap: don't leave behind a marker made only for this note.
       if (dictation.createdMarker && this.active === active) {
         await this.deleteMarker(basename(active.folder), dictation.markerId, true).catch(() => undefined)
@@ -1032,26 +1525,72 @@ export class Controller {
       marker.notes = marker.notes.filter((item) => item.id !== noteId)
       return found
     })
-    await this.discard(join(this.sessionFolder(folderName), note.audio))
+    await this.discard([join(this.sessionFolder(folderName), note.audio)])
   }
 
-  /** Files of deleted markers and notes go to the Recycle Bin, so a mistake can be undone from Windows. */
-  private async discard(file: string): Promise<void> {
-    await shell.trashItem(file).catch(() => undefined) // no Recycle Bin (e.g. network drive): the file stays
+  /**
+   * Files of deleted markers and notes go to the Recycle Bin, so a mistake can
+   * be undone from Windows. Where there is none (a network drive), the files
+   * stay: the trainer is told, since they may hold a voice or a private window.
+   */
+  private async discard(files: string[]): Promise<void> {
+    const left: string[] = []
+    for (const file of files) {
+      await shell.trashItem(file).catch(() => {
+        if (existsSync(file)) left.push(basename(file))
+      })
+    }
+    if (left.length) {
+      throw new Error(
+        `Deleted, but Windows kept its ${left.length === 1 ? 'file' : 'files'} (${left.join(', ')}): no Recycle Bin on this drive, or in use. Delete ${left.length === 1 ? 'it' : 'them'} from the session folder if needed.`
+      )
+    }
   }
 
   // --- Session edits, review and Companion -------------------------------------------
 
-  private async execute(name: SessionCommandName, args: unknown[]): Promise<void> {
-    const command = this.commands[name] as ((...args: unknown[]) => Promise<void>) | undefined
-    if (!command) throw new Error(`Unknown command: ${name}`)
-    await command(...args)
+  /** A session command from the app's windows (`device` null) or from a Companion device. */
+  private async execute(name: SessionCommandName, args: unknown[], device: CompanionDevice | null): Promise<void> {
+    const command = Object.hasOwn(this.commands, name)
+      ? (this.commands[name] as (...args: unknown[]) => Promise<void>)
+      : undefined
+    if (!command || !Array.isArray(args)) throw new Error('Unknown command')
+    if (!device) return command(...args)
+    // A device reaches only the session it shows: never the others in the archive.
+    if (SESSION_SCOPED.has(name)) {
+      const folderName = args[0]
+      if (folderName !== this.state.recording?.folderName && folderName !== this.state.review?.folderName) {
+        throw new Error('That session is not open')
+      }
+    }
+    switch (name) {
+      case 'startNote':
+        return this.startNote(device.id)
+      case 'stopNote':
+        return this.stopNote(device.id)
+      case 'holdPtt':
+        return this.holdPtt(args[0], device)
+      case 'releasePtt':
+        return this.releasePtt(args[0], device.id)
+      case 'addMarker':
+      case 'toggleRange': {
+        const last = this.lastCompanionMarker.get(device.id) ?? 0
+        if (Date.now() - last < MIN_COMPANION_MARKER_MS) throw new Error('One marker at a time')
+        this.lastCompanionMarker.set(device.id, Date.now())
+        return command(...args)
+      }
+      default:
+        return command(...args)
+    }
   }
 
   /** Full path of a session folder given its name, refusing anything outside the sessions folder. */
   private sessionFolder(folderName: string): string {
     const folder = typeof folderName === 'string' ? sessionFilePath([folderName]) : null
-    if (!folder || folderName.includes('/') || folderName.includes('\\')) throw new Error('Unknown session')
+    // Windows drops trailing dots and spaces: "..." or " " would be the sessions folder itself.
+    if (!folder || /[\\/:]|[. ]$/.test(folderName) || !existsSync(join(folder, 'session.json'))) {
+      throw new Error('Unknown session')
+    }
     return folder
   }
 
@@ -1085,7 +1624,7 @@ export class Controller {
     if (this.active?.folder === folder) this.publishRecording()
     const review = this.state.review
     if (review && sessionFilePath([review.folderName]) === folder) {
-      const current = session ?? (await this.store.update(folder, () => undefined))
+      const current = session ?? (await this.store.read(folder))
       this.patch({ review: { ...review, markers: structuredClone(current.markers) } })
     }
     this.broadcast('sessions:changed', null)
@@ -1094,25 +1633,27 @@ export class Controller {
   private async openReview(folderName: string): Promise<void> {
     const folder = this.sessionFolder(folderName)
     if (this.active?.folder === folder) throw new Error('This session is still being recorded')
-    await this.recoverRecording(folder).catch((error: unknown) => console.error('Recording not recovered', error))
-    const session = await this.store.update(folder, () => undefined)
+    await this.recoverRecording(folder, true).catch((error: unknown) => console.error('Recording not recovered', error))
+    // Read only: a session on a read-only drive can still be reviewed.
+    const session = await this.store.read(folder)
     this.patch({
       review: {
         folderName,
         metadata: session.metadata,
         durationMs: session.recording?.durationMs ?? 0,
         hasRecording: Boolean(session.recording?.file),
+        recordingFile: session.recording?.file ?? null,
         markers: structuredClone(session.markers),
         player: { positionMs: 0, playing: false, rate: 1, sampledAt: Date.now() }
       }
     })
-    await this.transcriber.resume(folder, session)
+    await this.transcriber.resume(folder, session).catch((error: unknown) => console.error(error))
   }
 
   /** The review player lives in the main window; other views steer it through here. */
   private sendPlayerCommand(command: PlayerCommand): void {
     if (!this.state.review) throw new Error('No session is open for review')
-    this.broadcast('player:command', command)
+    this.broadcast('player:command', validPlayerCommand(command))
   }
 
   private companionState(): CompanionState {
@@ -1120,43 +1661,118 @@ export class Controller {
     return {
       recording: this.state.recording,
       review: this.state.review,
+      hiddenWindowsError: this.state.hiddenWindowsError,
       categories: this.state.markerSettings.categories,
       voiceNoteHotkey: this.state.markerSettings.hotkeys.voiceNote?.label ?? null,
       pttKeys: PTT_TARGETS.flatMap((target) => {
         const key = pttKeys[target]
         return key ? [{ target, label: key.label }] : []
-      })
+      }),
+      pttHolds: this.state.pttHolds
     }
   }
 
   // --- Companion push-to-talk --------------------------------------------------------
 
-  /** Holds the voice chat's or Aurora's push-to-talk key while the Companion's button is held. */
-  private holdPtt(target: PttTarget): void {
-    if (!PTT_TARGETS.includes(target)) throw new Error('Unknown push-to-talk button')
-    const key = getSettings().companion.pttKeys[target]
+  /**
+   * Holds the voice chat's or Aurora's push-to-talk key while a Companion
+   * device's button is held. The device repeats this every second (keep-alive):
+   * the key goes up if it stops (a phone locked mid-press, Wi-Fi gone), after
+   * PTT_MAX_MS in any case, and when the recording or review ends.
+   */
+  private holdPtt(target: unknown, device: CompanionDevice): void {
+    if (!PTT_TARGETS.includes(target as PttTarget)) throw new Error('Unknown push-to-talk button')
+    const button = target as PttTarget
+    if (!this.state.recording && !this.state.review) {
+      throw new Error('Push-to-talk buttons work during a recording or a review')
+    }
+    const key = getSettings().companion.pttKeys[button]
     if (!key) throw new Error('No push-to-talk key set: see Setup → Companion')
-    if (this.pttHolds.has(target)) return
+    const held = this.pttHolds.get(button)
+    if (held) {
+      if (held.deviceId !== device.id) throw new Error(`${PTT_NAMES[button]} is held on ${held.deviceName}`)
+      held.keepalive.refresh()
+      return
+    }
+    const paused = this.pttPaused.get(button)
+    if (paused?.deviceId === device.id && (paused.mustRelease || Date.now() < paused.until)) {
+      throw new Error(
+        `${PTT_NAMES[button]} was released after ${PTT_MAX_MS[button] / 1000} s: let go of the button and press it again`
+      )
+    }
     const release = this.hotkeys.hold(key)
-    // A release that never arrives (a phone locked mid-press) must not keep talking.
-    const limit = setTimeout(() => this.releasePtt(target), PTT_MAX_MS)
-    this.pttHolds.set(target, { release, limit })
+    const limit = setTimeout(() => {
+      this.releasePtt(button, FROM_APP)
+      this.pttPaused.set(button, { deviceId: device.id, until: Date.now() + PTT_PAUSE_MS, mustRelease: true })
+      this.feedback('error')
+    }, PTT_MAX_MS[button])
+    const keepalive = setTimeout(() => this.releasePtt(button, FROM_APP), PTT_KEEPALIVE_MS)
+    this.pttHolds.set(button, { release, deviceId: device.id, deviceName: device.name, limit, keepalive })
+    this.publishPtt()
   }
 
-  private releasePtt(target: PttTarget): void {
-    const hold = this.pttHolds.get(target)
-    if (!hold) return
-    this.pttHolds.delete(target)
+  /** `from`: the device that holds it, or the app (limit, keep-alive, the PC's Release button, end of session). */
+  private releasePtt(target: unknown, from: string): void {
+    if (!PTT_TARGETS.includes(target as PttTarget)) throw new Error('Unknown push-to-talk button')
+    const button = target as PttTarget
+    const paused = this.pttPaused.get(button)
+    // The device let go after its limit: it may press again after the pause.
+    if (paused && paused.deviceId === from) paused.mustRelease = false
+    const hold = this.pttHolds.get(button)
+    // Another device's release must not cut this one off.
+    if (!hold || (from !== FROM_APP && from !== hold.deviceId)) return
+    this.pttHolds.delete(button)
     clearTimeout(hold.limit)
+    clearTimeout(hold.keepalive)
     hold.release()
+    this.publishPtt()
+  }
+
+  private releaseAllPtt(): void {
+    for (const target of [...this.pttHolds.keys()]) this.releasePtt(target, FROM_APP)
+  }
+
+  private publishPtt(): void {
+    this.patch({
+      pttHolds: [...this.pttHolds].map(([target, hold]) => ({
+        target,
+        deviceId: hold.deviceId,
+        deviceName: hold.deviceName
+      }))
+    })
+  }
+
+  /** A device's last connection closed: its release will never arrive. */
+  private deviceGone(device: CompanionDevice): void {
+    for (const [target, hold] of [...this.pttHolds]) if (hold.deviceId === device.id) this.releasePtt(target, FROM_APP)
+    if (this.dictation?.owner === device.id) this.run(() => this.stopNote(device.id))
+    this.lastCompanionMarker.delete(device.id)
+  }
+
+  /** The files a device may download: the screenshots and voice notes of the session it shows. */
+  private companionMayRead(folderName: string, path: string): boolean {
+    const markers =
+      this.state.recording?.folderName === folderName
+        ? this.state.recording.markers
+        : this.state.review?.folderName === folderName
+          ? this.state.review.markers
+          : null
+    return (
+      markers?.some((marker) => marker.screenshot === path || marker.notes.some((note) => note.audio === path)) ?? false
+    )
   }
 
   /** Transcribes notes left over from a previous run (app closed mid-queue) and recovers orphaned recordings. */
   private async resumeTranscriptions(): Promise<void> {
     for (const summary of await listSessions(getSettings().sessionsDir)) {
-      await this.recoverRecording(summary.folder).catch(() => undefined)
-      const session = await loadSession(summary.folder).catch(() => null)
-      if (session) await this.transcriber.resume(summary.folder, session)
+      // One odd session must not stop the others from being picked up.
+      try {
+        await this.recoverRecording(summary.folder).catch(() => undefined)
+        const session = await loadSession(summary.folder).catch(() => null)
+        if (session) await this.transcriber.resume(summary.folder, session)
+      } catch (error) {
+        console.error(`Session ${summary.folderName} not resumed`, error)
+      }
     }
   }
 
@@ -1165,6 +1781,7 @@ export class Controller {
       installedModels: this.transcriber.installedModels(),
       download: this.transcriber.currentDownload(),
       downloadError: this.transcriber.downloadError,
+      error: this.transcriber.lastError,
       queued: this.transcriber.queued(),
       available: this.transcriber.available()
     }
@@ -1211,17 +1828,25 @@ export class Controller {
     }
   }
 
+  /** Busy while any of these runs: the first one to finish must not say "done" for the others. */
+  private busyCount = 0
+
   private async withBusy<T>(fn: () => Promise<T>): Promise<T> {
-    this.patch({ busy: true })
+    if (this.busyCount++ === 0) this.patch({ busy: true })
     try {
       return await fn()
     } finally {
-      this.patch({ busy: false })
+      if (--this.busyCount === 0) this.patch({ busy: false })
     }
   }
 
   private patch(partial: Partial<AppState>): void {
     this.state = { ...this.state, ...partial }
+    const shareable = this.state.review !== null && this.state.recording === null
+    if (shareable !== this.shareable) {
+      this.shareable = shareable
+      this.onShareableChanged(shareable)
+    }
     this.broadcast('state:changed', this.state)
     this.companion.broadcast()
   }
@@ -1230,6 +1855,67 @@ export class Controller {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send(channel, payload)
     }
+  }
+}
+
+/**
+ * Why a sessions folder puts the recordings at risk, if it does: synchronised
+ * with OneDrive (recordings with other people's voices uploaded to the cloud),
+ * or outside the user's folder (other accounts on the PC may open it).
+ */
+function sessionsDirWarning(dir: string): string | null {
+  const inside = (parent: string | undefined): boolean =>
+    Boolean(parent) &&
+    resolve(dir)
+      .toLowerCase()
+      .startsWith(resolve(parent!).toLowerCase() + sep)
+  if ([process.env.OneDrive, process.env.OneDriveConsumer, process.env.OneDriveCommercial].some(inside)) {
+    return 'This folder is synchronised with OneDrive: the recordings (with the voices of everyone in the call), notes and screenshots are uploaded to the cloud. Choose a folder outside OneDrive.'
+  }
+  if (!inside(homedir())) {
+    return 'This folder is outside your user folder: other accounts on this PC may be able to open the recordings.'
+  }
+  return null
+}
+
+/** The New session details as the app expects them (the form checks them too, but a page can't be trusted). */
+function validMetadata(metadata: SessionMetadata): SessionMetadata {
+  const text = (value: unknown, max: number): string =>
+    String(value ?? '')
+      .trim()
+      .slice(0, max)
+  const clean: SessionMetadata = {
+    traineeVid: text(metadata?.traineeVid, 20),
+    traineeName: text(metadata?.traineeName, 100),
+    position: text(metadata?.position, 30).toUpperCase(),
+    trainingType: text(metadata?.trainingType, 40) || 'Training',
+    trainerVid: text(metadata?.trainerVid, 20),
+    date: text(metadata?.date, 10)
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean.date)) throw new Error('Enter the date of the session')
+  if (!/^\d+$/.test(clean.traineeVid)) throw new Error('The trainee VID must be a number')
+  if (!/^\d*$/.test(clean.trainerVid)) throw new Error('Your VID must be a number')
+  if (!clean.position) throw new Error('The position is required')
+  return clean
+}
+
+function sameDisplay(a: DisplayOption, b: DisplayOption): boolean {
+  return a.id === b.id && a.name === b.name && a.width === b.width && a.height === b.height
+}
+
+/** Why a file operation failed, in words (no paths: they carry the Windows user name). */
+function describeFileError(error: unknown): string {
+  switch ((error as NodeJS.ErrnoException)?.code) {
+    case 'ENOSPC':
+      return 'the disk is full'
+    case 'EPERM':
+    case 'EACCES':
+    case 'EBUSY':
+      return 'the file is in use or read-only'
+    case 'ENOENT':
+      return 'the folder is gone (a removed drive?)'
+    default:
+      return 'Windows refused to write it'
   }
 }
 
@@ -1244,7 +1930,8 @@ function describeObsError(error: unknown): string {
       ? 'OBS requires a password: paste the one shown in OBS (Tools → WebSocket Server Settings → Show Connect Info).'
       : 'OBS rejected the password. Paste it again from OBS (Tools → WebSocket Server Settings → Show Connect Info).'
   }
-  if (/ECONNREFUSED|connect|socket|closed/i.test(message) && !/too old/.test(message)) {
+  // Only a connection that failed: OBS's own answers ("…Stop it in OBS, then connect again.") are kept as they are.
+  if (/ECONNREFUSED|ECONNRESET|socket hang up|OBS did not answer|connection (closed|refused)/i.test(message)) {
     return 'Cannot reach OBS. Make sure OBS is running and the WebSocket server is enabled (Tools → WebSocket Server Settings).'
   }
   return message

@@ -13,6 +13,20 @@ interface HotkeyInputProps {
   modifiersAlone?: boolean
 }
 
+/** Keys that type something: as a global hotkey they also fire while writing in Aurora or Discord. */
+const TYPING_KEYS =
+  /^([A-Z0-9]|Space|Comma|Period|Slash|Semicolon|Quote|Backquote|BracketLeft|BracketRight|Backslash|Minus|Equal)$/
+
+function typesText(hotkey: Hotkey | null): boolean {
+  return (
+    hotkey !== null &&
+    hotkey.device === 'keyboard' &&
+    !hotkey.ctrl &&
+    !hotkey.alt &&
+    TYPING_KEYS.test(hotkey.label.replace(/^Shift \+ /, ''))
+  )
+}
+
 /** Click, then press any key (with modifiers) or a middle/side mouse button. */
 export function HotkeyInput({
   value,
@@ -22,6 +36,7 @@ export function HotkeyInput({
   modifiersAlone = false
 }: HotkeyInputProps): React.JSX.Element {
   const [capturing, setCapturing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   // Read through a ref so re-renders during capture don't restart it.
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
@@ -29,14 +44,28 @@ export function HotkeyInput({
   useEffect(() => {
     if (!capturing) return
     let cancelled = false
-    void window.api.captureHotkey(modifiersAlone).then((hotkey) => {
-      if (cancelled) return
-      setCapturing(false)
-      if (hotkey) onChangeRef.current(hotkey)
-    })
+    // Its own id: cancelling this capture (another field clicked) never ends the next one.
+    const id = crypto.randomUUID()
+    setError(null)
+    window.api.captureHotkey(id, modifiersAlone).then(
+      (hotkey) => {
+        if (cancelled) return
+        setCapturing(false)
+        if (hotkey) onChangeRef.current(hotkey)
+      },
+      (e: unknown) => {
+        if (cancelled) return
+        setCapturing(false)
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    )
+    // Switching to another program ends the capture: a key typed there must not become the hotkey.
+    const cancelOnBlur = (): void => setCapturing(false)
+    window.addEventListener('blur', cancelOnBlur)
     return () => {
       cancelled = true
-      void window.api.cancelHotkeyCapture()
+      window.removeEventListener('blur', cancelOnBlur)
+      void window.api.cancelHotkeyCapture(id)
     }
   }, [capturing, modifiersAlone])
 
@@ -69,7 +98,14 @@ export function HotkeyInput({
         </Button>
       </div>
       {capturing && <span className="text-xs text-muted-foreground">Esc cancels.</span>}
+      {error && !capturing && <span className="text-xs text-semantic-red-600">{error}</span>}
       {conflict && !capturing && <span className="text-xs text-semantic-red-600">Also used for “{conflict}”.</span>}
+      {!capturing && !conflict && typesText(value) && (
+        <span className="text-xs text-semantic-yellow-700 dark:text-semantic-yellow-400">
+          This key types text: it also fires while you write in Aurora or Discord. A function key (F1–F24) or a mouse
+          side button is safer.
+        </span>
+      )}
     </div>
   )
 }

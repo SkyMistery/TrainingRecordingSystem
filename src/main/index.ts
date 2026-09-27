@@ -1,13 +1,21 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } from 'electron'
 import type { Theme, ThemePreference, ThemeState } from '../shared/theme'
 import { isAppPage, loadAppPage } from './appPages'
 import { Controller } from './controller'
 import { handleMediaScheme, registerMediaScheme } from './media'
 import { flushSettings, getSettings, updateSettings } from './settings'
-import { installUpdate, startUpdater } from './updater'
+import { downloadUpdate, installUpdate, startUpdater } from './updater'
 
 registerMediaScheme()
+
+// A bug must never leave a key pressed (Aurora would keep transmitting) nor
+// stop the app with a dialog on the shared screen: it is logged instead.
+process.on('uncaughtException', (error) => {
+  console.error('Unexpected error', error)
+  controller?.releaseEverything()
+})
+process.on('unhandledRejection', (reason) => console.error('Unhandled rejection', reason))
 
 // A second copy would fight over the keyboard hook, OBS, the Companion port and
 // the same files: bring the running one to the front instead.
@@ -20,10 +28,22 @@ app.on('second-instance', () => {
   mainWindow.focus()
 })
 
+/** The only places links of the app lead to: its own documents on GitHub and IVAO's sites. */
+function isKnownLink(url: string): boolean {
+  try {
+    const { protocol, hostname, pathname } = new URL(url)
+    if (protocol !== 'https:') return false
+    if (hostname === 'github.com') return pathname.startsWith('/SkyMistery/TrainingRecordingSystem')
+    return hostname === 'ivao.aero' || hostname.endsWith('.ivao.aero') || hostname === 'obsproject.com'
+  } catch {
+    return false
+  }
+}
+
 /**
  * Every window stays on its own page: a link, a dropped file or a script must
  * not replace it with another page (which would get the preload's API), and
- * new windows are refused (web links go to the default browser).
+ * new windows are refused (the app's own links go to the default browser).
  */
 app.on('web-contents-created', (_event, contents) => {
   contents.on('will-navigate', (event, url) => {
@@ -34,7 +54,7 @@ app.on('web-contents-created', (_event, contents) => {
   })
   contents.on('will-attach-webview', (event) => event.preventDefault())
   contents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) void shell.openExternal(url)
+    if (isKnownLink(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
 })
@@ -42,8 +62,13 @@ app.on('web-contents-created', (_event, contents) => {
 // Atmosphere page background (--body) for each theme, used before the UI paints.
 const BODY_COLOR: Record<Theme, string> = { day: '#ffffff', night: '#12131b' }
 
-/** Stopping the recording and restoring the OBS profile normally takes a few seconds. */
-const SHUTDOWN_TIMEOUT_MS = 20_000
+/**
+ * Stopping the recording (OBS may take up to 30 s to finish a long file),
+ * waiting for it to be idle and restoring the OBS profile: never longer.
+ */
+const SHUTDOWN_TIMEOUT_MS = 60_000
+/** "Restart to update" that didn't restart by then: the installer didn't start. */
+const INSTALL_TIMEOUT_MS = 15_000
 
 let mainWindow: BrowserWindow | null = null
 let controller: Controller | null = null
@@ -70,10 +95,13 @@ function createMainWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
-      contextIsolation: true
+      contextIsolation: true,
+      devTools: !app.isPackaged
     }
   })
 
+  // Hidden from screen capture (OBS, Discord) unless a review is open: see Controller.
+  mainWindow.setContentProtection(!(controller?.isShareable() ?? false))
   mainWindow.once('ready-to-show', () => mainWindow?.show())
 
   // Closing the window while recording goes through the quit confirmation.
@@ -88,6 +116,13 @@ function createMainWindow(): void {
     mainWindow = null
     app.quit()
   })
+  // Windows shutting down, restarting or signing out: before-quit never comes.
+  // While recording Windows waits a moment (it shows the app as busy) for a clean stop.
+  mainWindow.on('query-session-end', (event) => {
+    if (controller?.isRecording()) event.preventDefault()
+    void quitNow()
+  })
+  mainWindow.on('session-end', () => void quitNow())
 
   void loadAppPage(mainWindow)
 }
@@ -110,21 +145,49 @@ async function shutdown(): Promise<void> {
   ])
 }
 
+/** Quits now (the recording stopped and saved first), without asking. */
+async function quitNow(): Promise<void> {
+  if (quitState !== 'running') return
+  quitState = 'shuttingDown'
+  await shutdown()
+  quitState = 'done'
+  app.quit()
+}
+
 function registerIpc(): void {
-  ipcMain.handle('app:version', () => app.getVersion())
+  // Only the app's own pages may ask (the Companion page in the notes window has no preload anyway).
+  const handle = (channel: string, fn: (...args: any[]) => unknown): void => {
+    ipcMain.handle(channel, (event, ...args) => {
+      if (!isAppPage(event.senderFrame?.url ?? '')) throw new Error('Not allowed')
+      return fn(...args)
+    })
+  }
+  handle('app:version', () => app.getVersion())
+  handle('update:download', () => {
+    if (controller?.isRecording()) throw new Error('Stop the recording before updating')
+    return downloadUpdate()
+  })
   // "Restart to update": the app's own shutdown first, since the installer
   // starts at once and would cut the OBS profile restore short.
-  ipcMain.handle('update:install', async (event) => {
-    if (!isAppPage(event.senderFrame?.url ?? '')) throw new Error('Not allowed')
+  handle('update:install', async () => {
     if (controller?.isRecording()) throw new Error('Stop the recording before updating')
     if (quitState !== 'running') return
     quitState = 'shuttingDown'
     await shutdown()
     quitState = 'done'
     installUpdate()
+    // The installer didn't start (moved away, blocked by an antivirus): don't stay half closed.
+    setTimeout(() => {
+      dialog.showErrorBox(
+        'The update was not installed',
+        'The installer did not start (an antivirus may have blocked it). The app closes now: start it again and try the update later, or download it from GitHub.'
+      )
+      app.exit(0)
+    }, INSTALL_TIMEOUT_MS).unref()
   })
-  ipcMain.handle('theme:get', (): ThemeState => ({ theme: effectiveTheme(), preference: getSettings().theme }))
-  ipcMain.handle('theme:set', async (_event, preference: ThemePreference) => {
+  handle('theme:get', (): ThemeState => ({ theme: effectiveTheme(), preference: getSettings().theme }))
+  handle('theme:set', async (preference: ThemePreference) => {
+    if (!['day', 'night', 'system'].includes(preference)) throw new Error('Invalid theme')
     applyThemePreference(preference)
     await updateSettings({ theme: preference })
     return effectiveTheme()
@@ -139,22 +202,32 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
-  // Only the app's own pages get permissions (the microphone); the Companion
-  // page in the notes window and anything else get none.
-  session.defaultSession.setPermissionRequestHandler((contents, _permission, callback) =>
-    callback(isAppPage(contents.getURL()))
-  )
-  session.defaultSession.setPermissionCheckHandler((contents, _permission, _origin, details) =>
-    isAppPage(details.requestingUrl ?? contents?.getURL() ?? '')
+  // No menu in the installed app: its shortcuts would reload the page (losing
+  // what is being typed), close the app during a review without asking, or
+  // open the developer tools, and Alt would show it in a shared window.
+  if (app.isPackaged) Menu.setApplicationMenu(null)
+  // Only the app's own pages get a permission, and only the microphone; the
+  // Companion page in the notes window and anything else get none.
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const audioOnly =
+      permission === 'media' &&
+      'mediaTypes' in details &&
+      (details.mediaTypes ?? []).length > 0 &&
+      (details.mediaTypes ?? []).every((type) => type === 'audio')
+    callback(audioOnly && isAppPage(contents.getURL()))
+  })
+  session.defaultSession.setPermissionCheckHandler(
+    (contents, permission, _origin, details) =>
+      permission === 'media' && isAppPage(details.requestingUrl ?? contents?.getURL() ?? '')
   )
   applyThemePreference(getSettings().theme)
   handleMediaScheme()
   registerIpc()
-  // Transcripts shown while recording must not end up in the recording itself
-  // (single monitor, or the window left on the recorded one): hide the window
-  // from screen capture only then, since the review is meant to be shared.
-  controller = new Controller((recording) => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setContentProtection(recording)
+  // Only the review is meant to be shared (Discord): the recording page shows
+  // transcripts (they would end up in the recording itself on the recorded
+  // monitor), the sessions list other trainees, Setup the pairing QR code.
+  controller = new Controller((shareable) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setContentProtection(!shareable)
   })
   try {
     await controller.init()
@@ -177,13 +250,15 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => app.quit())
 
 // Stop the recording cleanly and give OBS back the trainer's own profile.
+let askingToQuit = false
 app.on('before-quit', (event) => {
   if (quitState === 'done') return
   event.preventDefault()
   // Closing windows during shutdown asks to quit again: let the first request finish.
-  if (quitState === 'shuttingDown') return
+  if (quitState === 'shuttingDown' || askingToQuit) return
   void (async () => {
     if (controller?.isRecording() && mainWindow && !mainWindow.isDestroyed()) {
+      askingToQuit = true
       const { response } = await dialog.showMessageBox(mainWindow, {
         type: 'warning',
         buttons: ['Stop recording and quit', 'Cancel'],
@@ -192,11 +267,9 @@ app.on('before-quit', (event) => {
         message: 'A training session is being recorded.',
         detail: 'Quitting stops the recording. The session and everything recorded so far are kept.'
       })
+      askingToQuit = false
       if (response !== 0) return
     }
-    quitState = 'shuttingDown'
-    await shutdown()
-    quitState = 'done'
-    app.quit()
+    await quitNow()
   })()
 })

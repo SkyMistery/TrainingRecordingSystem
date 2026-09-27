@@ -1,10 +1,10 @@
-import { randomBytes } from 'node:crypto'
 import { copyFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import { writeJsonAtomic } from './files'
 import type { ThemePreference } from '../shared/theme'
 import type { CaptureConfig, CompanionSettings, Hotkey, MarkerSettings, NoteSettings } from '../shared/types'
+import type { StoredDevice } from './companion'
 
 export interface Settings {
   theme: ThemePreference
@@ -20,8 +20,8 @@ export interface Settings {
   markers: MarkerSettings
   notes: NoteSettings
   companion: CompanionSettings
-  /** Secret that pairs Companion devices; a new one unpairs them all. */
-  companionToken: string
+  /** Paired Companion devices, each with a digest of its own secret. */
+  companionDevices: StoredDevice[]
   /** Trainer's own OBS profile and scene collection, to restore on exit. */
   obsPreviousWorkspace: { profile: string | null; collection: string | null } | null
   /** Last position of the status window, in screen coordinates. */
@@ -40,7 +40,7 @@ const key = (code: number, label: string): Hotkey => ({
 })
 
 /** Category colours come from the IVAO brand palette (atmos, semantic, product). */
-export const defaultMarkerSettings = (): MarkerSettings => ({
+const defaultMarkerSettings = (): MarkerSettings => ({
   preRollSeconds: 10,
   // 67 and 68 are the uiohook keycodes of F9 and F10.
   hotkeys: { marker: key(67, 'F9'), range: key(68, 'F10'), voiceNote: null },
@@ -81,7 +81,7 @@ const defaults = (): Settings => ({
     vocabulary: ''
   },
   companion: { enabled: true, lan: false, port: 17645, pttKeys: { voiceChat: null, aurora: null } },
-  companionToken: randomBytes(24).toString('hex'),
+  companionDevices: [],
   obsPreviousWorkspace: null,
   statusWindowPosition: null,
   termsAccepted: null
@@ -131,6 +131,8 @@ export function getSettings(): Settings {
           }
         }
       : base
+    // Before v1.6 one pairing secret for every device, kept in the clear: devices pair again.
+    delete (current as Partial<Settings> & { companionToken?: string }).companionToken
   }
   return current
 }
@@ -166,7 +168,9 @@ export function decryptSecret(encrypted: string | null): string | undefined {
   if (!encrypted) return undefined
   try {
     return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
-  } catch {
+  } catch (error) {
+    // Another Windows user, or the key lost with the app's data: the password must be entered again.
+    console.error('The saved OBS password could not be decrypted', error)
     return undefined
   }
 }

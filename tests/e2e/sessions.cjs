@@ -3,6 +3,8 @@
 // (to the Recycle Bin), correcting a session's details (folders renamed). Runs an
 // isolated app instance with its own sessions folder in %TEMP%: no OBS needed.
 const { spawn } = require('node:child_process')
+// The terms version the app asks for: isolated settings accept it.
+const { TERMS_VERSION } = require('./lib.cjs')
 const { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs')
 const { join } = require('node:path')
 const { tmpdir } = require('node:os')
@@ -114,7 +116,7 @@ async function main() {
     JSON.stringify({
       sessionsDir: SESSIONS,
       // Isolated test profile: the terms dialog would cover the page.
-      termsAccepted: { version: 1, acceptedAt: new Date().toISOString() },
+      termsAccepted: { version: TERMS_VERSION, acceptedAt: new Date().toISOString() },
       companion: { enabled: false, lan: false, port: 17647 },
       obs: { host: '127.0.0.1', port: 1, passwordEncrypted: null }
     })

@@ -70,6 +70,13 @@ export interface MaskRect {
   height: number
 }
 
+/**
+ * Masks by slot: a covered window keeps its slot while it is on screen, so
+ * masks never swap places (a swap would uncover a window for a moment); null
+ * is a free slot.
+ */
+export type MaskSlots = (MaskRect | null)[]
+
 export interface CaptureConfig {
   display: DisplayOption | null
   outputScale: OutputScale
@@ -91,10 +98,16 @@ export interface SessionMetadata {
 }
 
 export interface RecordingInfo {
+  /** File name inside the session folder ("recording.mp4"); null until OBS's file was moved there. */
   file: string | null
   startedAt: string
   durationMs: number
   display: { name: string; width: number; height: number } | null
+  /**
+   * When OBS confirmed the recording stopped (v1.6+). A session that has it is
+   * finished: a recording OBS makes later in its folder never continues it.
+   */
+  endedAt?: string
 }
 
 /** A keyboard key or mouse button, with the modifiers held. */
@@ -194,6 +207,8 @@ export interface TranscriptionState {
   installedModels: WhisperModelId[]
   download: ModelDownload | null
   downloadError: string | null
+  /** Why transcriptions fail, when the trainer can fix it (e.g. a runtime missing on this PC). */
+  error: string | null
   /** Notes waiting for or being transcribed. */
   queued: number
   /** False when the whisper program is missing from the installation. */
@@ -208,7 +223,7 @@ export interface SessionFile {
   recording: RecordingInfo | null
   markers: Marker[]
   /** The trainer's confirmation that everyone in the voice call agreed to be recorded (v1.3+). */
-  consent?: { statement: string; confirmedAt: string }
+  consent?: { statement: string; confirmedAt: string; termsVersion?: number }
 }
 
 /** Session details the trainer can correct after recording (typos); they also name the folder. */
@@ -227,7 +242,6 @@ export interface SessionSummary {
 }
 
 export interface RecordingState {
-  sessionId: string
   metadata: SessionMetadata
   /** Recording time (ms) at `sampledAt` (epoch ms); the UI extrapolates between updates. */
   elapsedMs: number
@@ -238,12 +252,28 @@ export interface RecordingState {
   openRangeId: string | null
   /** Marker receiving the voice note being dictated, if any. */
   dictatingMarkerId: string | null
+  /** Problems met during this recording (a note not muted in OBS, a save that failed…), newest last. */
+  warnings: string[]
+  /** Paused in OBS: the recording (and its clock) doesn't advance. */
+  paused: boolean
+}
+
+/** Something the trainer must see whatever page is open, until dismissed. */
+export interface AppNotice {
+  kind: 'error' | 'warning' | 'info'
+  title: string
+  message: string
+  /** What "Try again" does, if offered: save the session whose last save failed. */
+  retry?: 'saveSession'
 }
 
 /** A newer version of the app found on GitHub Releases. */
 export interface UpdateState {
-  /** "error": the download stopped; the next check tries again. */
-  status: 'downloading' | 'ready' | 'error'
+  /**
+   * available: found, not downloaded (the trainer decides); error: the download
+   * stopped (the button tries again); ready: downloaded, installed on "Restart to update".
+   */
+  status: 'available' | 'downloading' | 'ready' | 'error'
   version: string
   percent: number
 }
@@ -260,11 +290,22 @@ export interface AppState {
   companionSettings: CompanionSettings
   /** Where new sessions are saved and the sessions list is read from. */
   sessionsDir: string
+  /** Why that folder is a risk for the recordings (cloud sync, other accounts), if it is. */
+  sessionsDirWarning: string | null
   /** Why hidden windows can't be covered right now, if anything. */
   hiddenWindowsError: string | null
+  /** Hidden-window rules with a matching window open on screen right now (rule ids). */
+  hiddenWindowsFound: string[]
   /** Why voice notes can't be recorded right now (microphone problem), if anything. */
   microphoneError: string | null
   update: UpdateState | null
+  notice: AppNotice | null
+  /** Push-to-talk keys held for Companion buttons right now: shown on the PC, with a Release button. */
+  pttHolds: PttHold[]
+  /** A key the app pressed and Windows didn't let it release yet (it keeps trying), if any. */
+  stuckKey: string | null
+  /** Why the global hotkeys don't work, if they don't. */
+  hotkeysError: string | null
   /** Version of the terms of use the user accepted (see shared/terms.ts), if any. */
   termsAcceptedVersion: number | null
   busy: boolean
@@ -312,6 +353,8 @@ export interface ReviewState {
   metadata: SessionMetadata
   durationMs: number
   hasRecording: boolean
+  /** The recording's file name in the session folder, when there is one. */
+  recordingFile: string | null
   markers: Marker[]
   player: PlayerState
 }
@@ -328,26 +371,48 @@ export interface CompanionSettings {
   pttKeys: Record<PttTarget, Hotkey | null>
 }
 
+/** A tablet or phone paired with the Companion (each has its own secret). */
+export interface CompanionDeviceInfo {
+  id: string
+  /** From its browser, e.g. "Android · Chrome". */
+  name: string
+  pairedAt: string
+  lastSeenAt: string | null
+  connected: boolean
+}
+
 export interface CompanionInfo {
   running: boolean
   error: string | null
-  /** Pairing links: this PC first, then local network addresses when enabled. */
+  /** One-time pairing links: this PC first, then local network addresses when enabled. */
   urls: string[]
   /** QR code (data URL) for the best network link, or this PC's. */
   qr: string | null
   clients: number
   /** Windows network profile is Public: its firewall blocks tablets. */
   publicNetwork: boolean
+  devices: CompanionDeviceInfo[]
+}
+
+/** A push-to-talk key the app is holding for a Companion button, and for which device. */
+export interface PttHold {
+  target: PttTarget
+  deviceId: string
+  deviceName: string
 }
 
 /** What the Companion page receives: everything it shows, nothing else. */
 export interface CompanionState {
   recording: RecordingState | null
   review: ReviewState | null
+  /** Private windows are not being covered in the recording right now (why), if so. */
+  hiddenWindowsError: string | null
   categories: MarkerCategory[]
   voiceNoteHotkey: string | null
   /** Push-to-talk buttons to show, with the name of the key each one holds. */
   pttKeys: { target: PttTarget; label: string }[]
+  /** Push-to-talk keys held right now (the buttons show what the PC really does). */
+  pttHolds: PttHold[]
 }
 
 /**

@@ -20,7 +20,18 @@ import {
   TableRoot,
   TableRow
 } from '@ivao/atmosphere-react'
-import { Circle, CircleAlert, Ellipsis, FolderOpen, Pencil, Play, RefreshCw, Settings2, Trash2 } from 'lucide-react'
+import {
+  Circle,
+  CircleAlert,
+  Ellipsis,
+  EyeOff,
+  FolderOpen,
+  Pencil,
+  Play,
+  RefreshCw,
+  Settings2,
+  Trash2
+} from 'lucide-react'
 import { RECORDING_CONSENT } from '@shared/terms'
 import type { AppState, SessionDetails, SessionMetadata, SessionSummary } from '@shared/types'
 import { FirstRunChecklist, useChecklist } from '../components/FirstRunChecklist'
@@ -33,10 +44,12 @@ const SESSION_TYPES = [
 
 /** `onBusyChange` keeps the dialog open while starting: closing it would hide an error. */
 function NewSessionForm({
+  hiddenWindowsError,
   onCancel,
   onStarted,
   onBusyChange
 }: {
+  hiddenWindowsError: string | null
   onCancel: () => void
   onStarted: () => void
   onBusyChange: (busy: boolean) => void
@@ -145,6 +158,18 @@ function NewSessionForm({
           </span>
         </div>
       </div>
+      <p className="text-xs text-muted-foreground">
+        Notifications that pop up on the recorded monitor (Windows, Discord, messages) are recorded too: turn on Do not
+        disturb before you start.
+      </p>
+      {hiddenWindowsError && (
+        <Alert
+          variant="destructive"
+          Icon={EyeOff}
+          title="Private windows would NOT be covered"
+          description={`${hiddenWindowsError} Fix it in Setup → Hidden windows before recording.`}
+        />
+      )}
       {error && (
         <Alert variant="destructive" Icon={CircleAlert} title="Could not start recording" description={error} />
       )}
@@ -330,6 +355,7 @@ export function SessionsPage({ state, onOpenSetup }: { state: AppState; onOpenSe
               }
             >
               <NewSessionForm
+                hiddenWindowsError={state.hiddenWindowsError}
                 onCancel={() => setDialogOpen(false)}
                 onStarted={() => setDialogOpen(false)}
                 onBusyChange={setFormBusy}

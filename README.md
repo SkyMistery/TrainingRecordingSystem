@@ -5,7 +5,7 @@ moments while it happens, attach voice notes that are transcribed
 automatically, and review everything during the debriefing — sharing the
 recording on Discord while your notes stay on another screen or a tablet.
 
-> Status: v1.5 — recording, markers, voice notes, review and Companion are
+> Status: v1.6 — recording, markers, voice notes, review and Companion are
 > released. See the [roadmap](docs/ROADMAP.md) and [future ideas](docs/FUTURE.md).
 
 ## Features
@@ -41,7 +41,8 @@ recording on Discord while your notes stay on another screen or a tablet.
 Download the latest `TrainingRecordingSystem-Setup-x.y.z.exe` from
 [Releases](https://github.com/SkyMistery/TrainingRecordingSystem/releases).
 The installer is not code-signed, so Windows SmartScreen may warn: choose
-**More info → Run anyway**. The app updates itself from GitHub Releases.
+**More info → Run anyway**. The app offers new versions from GitHub Releases
+and installs them when you confirm.
 
 Then follow the [user guide](docs/USER_GUIDE.md). On first start the app asks
 you to accept the [terms of use](docs/TERMS.md): record only with the consent
@@ -53,12 +54,14 @@ of everyone in the voice call, and never publish the recordings.
 npm install
 npm run dev          # app with hot reload (downloads whisper.cpp on first run)
 npm run typecheck
-npm run format       # Prettier
+npm test             # unit tests (no app or OBS needed)
+npm run format       # Prettier (src, scripts, tests, .github)
 npm run build        # production bundle in out/; run it with: npx electron .
 npm run dist         # Windows installer in dist/
 ```
 
-End-to-end tests drive the real app, OBS and microphone: see
+End-to-end tests drive the real app, OBS and microphone in an isolated
+instance: see
 [tests/e2e/README.md](tests/e2e/README.md).
 
 Releasing: bump `version` in `package.json`, commit, push, then push a

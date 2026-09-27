@@ -26,7 +26,7 @@ import { HiddenWindowsCard } from '../components/HiddenWindowsCard'
 import { MarkersCard } from '../components/MarkersCard'
 import { SetupSection, useCollapsedSections, type SectionProps } from '../components/SetupSection'
 import { VoiceNotesCard } from '../components/VoiceNotesCard'
-import { type SettingsPatch, useAudioLevels, usePatchSaver } from '../hooks'
+import { type SettingsPatch, usePatchSaver } from '../hooks'
 
 function useAction(): [string | null, <T>(fn: () => Promise<T>) => Promise<T | undefined>] {
   const [error, setError] = useState<string | null>(null)
@@ -64,7 +64,11 @@ function ObsConnectionCard({ state, section }: { state: AppState; section: Secti
     })
   }, [])
 
+  // A second click (or Enter) while connecting would cut the first attempt short.
+  const [pending, setPending] = useState(false)
   const connect = (): void => {
+    if (pending) return
+    setPending(true)
     void run(async () => {
       await window.api.connectObs({
         host,
@@ -73,7 +77,7 @@ function ObsConnectionCard({ state, section }: { state: AppState; section: Secti
       })
       if (password !== '') setHasPassword(true)
       setPassword('')
-    })
+    }).finally(() => setPending(false))
   }
 
   const { obs } = state
@@ -116,7 +120,11 @@ function ObsConnectionCard({ state, section }: { state: AppState; section: Secti
             onChange={(e) => setPassword(e.target.value)}
           />
         </div>
-        <Button type="submit" isLoading={obs.status === 'connecting'} disabled={state.recording !== null}>
+        <Button
+          type="submit"
+          isLoading={obs.status === 'connecting' || pending}
+          disabled={state.recording !== null || pending}
+        >
           <Plug className="size-4" aria-hidden />
           {obs.status === 'connected' ? 'Reconnect' : 'Connect'}
         </Button>
@@ -282,7 +290,6 @@ function AudioCard({
   section: SectionProps
 }): React.JSX.Element {
   const connected = state.obs.status === 'connected'
-  const levels = useAudioLevels()
   const [kind, setKind] = useState<AudioSourceKind>('application')
   const [targets, setTargets] = useState<AudioTargetOption[]>([])
   const [target, setTarget] = useState<string | undefined>()
@@ -333,7 +340,6 @@ function AudioCard({
     >
       <AudioMixer
         sources={shown}
-        levels={levels}
         onMutedChange={(id, muted) => void run(() => window.api.setSourceMuted(id, muted))}
         onVolumeChange={(id, volumeDb) => setDragVolume((current) => ({ ...current, [id]: volumeDb }))}
         onVolumeCommit={(id, volumeDb) =>
@@ -414,6 +420,14 @@ function SessionsFolderCard({ state, section }: { state: AppState; section: Sect
       <code className="select-text break-all rounded-sm bg-fuselage-100 p-2 font-mono text-xs dark:bg-fuselage-800">
         {state.sessionsDir}
       </code>
+      {state.sessionsDirWarning && (
+        <Alert
+          variant="destructive"
+          Icon={CircleAlert}
+          title="About this folder"
+          description={state.sessionsDirWarning}
+        />
+      )}
       <div className="flex flex-wrap gap-2">
         <Button
           variant="outline"

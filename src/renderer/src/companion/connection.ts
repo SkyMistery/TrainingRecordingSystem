@@ -1,13 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
-import type { CompanionState, SessionCommandName, SessionCommands } from '@shared/types'
+import type { CompanionState, PlayerState, SessionCommandName, SessionCommands } from '@shared/types'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'unpaired'
 
 interface Connection {
   status: ConnectionStatus
   state: CompanionState | null
+  /** This device's id, as the app knows it (to tell its own push-to-talk from another device's). */
+  deviceId: string | null
+  /** The app's clock minus this device's: times from the app (the player, the recording) are on its clock. */
+  clockOffsetMs: number
   send: <K extends SessionCommandName>(name: K, ...args: SessionCommands[K]) => Promise<void>
 }
+
+type Message =
+  | { type: 'hello'; deviceId: string }
+  | { type: 'state'; state: CompanionState; serverNow: number }
+  | { type: 'player'; player: PlayerState; serverNow: number }
+  | { type: 'result'; id: number | null; error?: string }
 
 const RETRY_MS = 2000
 /** A half-open connection (phone waking up) never answers: give up on a command after this. */
@@ -20,6 +30,8 @@ const REQUEST_TIMEOUT_MS = 10_000
 export function useCompanionConnection(): Connection {
   const [status, setStatus] = useState<ConnectionStatus>('connecting')
   const [state, setState] = useState<CompanionState | null>(null)
+  const [deviceId, setDeviceId] = useState<string | null>(null)
+  const [clockOffsetMs, setClockOffset] = useState(0)
   const socket = useRef<WebSocket | null>(null)
   const pending = useRef(new Map<number, { resolve: () => void; reject: (error: Error) => void }>())
   const nextId = useRef(1)
@@ -38,11 +50,23 @@ export function useCompanionConnection(): Connection {
         setStatus('connected')
       }
       ws.onmessage = (event) => {
-        const message = JSON.parse(String(event.data)) as
-          { type: 'state'; state: CompanionState } | { type: 'result'; id: number; error?: string }
-        if (message.type === 'state') {
+        let message: Message
+        try {
+          message = JSON.parse(String(event.data)) as Message
+        } catch {
+          return
+        }
+        if (message.type === 'hello') {
+          setDeviceId(message.deviceId)
+        } else if (message.type === 'state') {
+          setClockOffset(message.serverNow - Date.now())
           setState(message.state)
-        } else {
+        } else if (message.type === 'player') {
+          setClockOffset(message.serverNow - Date.now())
+          setState((current) =>
+            current?.review ? { ...current, review: { ...current.review, player: message.player } } : current
+          )
+        } else if (message.id !== null) {
           const request = pending.current.get(message.id)
           pending.current.delete(message.id)
           if (message.error) request?.reject(new Error(message.error))
@@ -102,5 +126,5 @@ export function useCompanionConnection(): Connection {
       ws.send(JSON.stringify({ id, name, args }))
     })
 
-  return { status, state, send }
+  return { status, state, deviceId, clockOffsetMs, send }
 }

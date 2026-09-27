@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { AppFooter } from './components/AppFooter'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { Header, type Page } from './components/Header'
+import { KeysBar } from './components/KeysBar'
+import { NoticeBanner } from './components/NoticeBanner'
 import { TermsDialog } from './components/TermsDialog'
 import { useMarkerFeedbackSound } from './feedback'
 import { useAppState } from './hooks'
@@ -40,19 +43,29 @@ export function App(): React.JSX.Element {
         update={state?.update ?? null}
         recording={recording !== null}
       />
+      {state && <KeysBar state={state} />}
       <main className="flex flex-1 flex-col overflow-auto">
+        {/* Not over the review: that window may be shared, and a notice can name another session. */}
+        {state?.notice && !review && (
+          <div className="container max-w-5xl pt-6">
+            <NoticeBanner key={state.notice.title + state.notice.message} notice={state.notice} />
+          </div>
+        )}
         {/* The review player uses the whole width: the recording is Full HD. */}
         <div className={review ? 'flex-1 px-6 py-4' : 'container max-w-5xl flex-1 py-8'}>
-          {state &&
-            (recording ? (
-              <RecordingPage state={state} recording={recording} />
-            ) : review ? (
-              <ReviewPage key={review.folderName} state={state} review={review} />
-            ) : page === 'setup' ? (
-              <SetupPage state={state} />
-            ) : (
-              <SessionsPage state={state} onOpenSetup={() => setPage('setup')} />
-            ))}
+          {state && (
+            <ErrorBoundary key={recording ? 'recording' : review ? `review:${review.folderName}` : page}>
+              {recording ? (
+                <RecordingPage state={state} recording={recording} />
+              ) : review ? (
+                <ReviewPage key={review.folderName} state={state} review={review} />
+              ) : page === 'setup' ? (
+                <SetupPage state={state} />
+              ) : (
+                <SessionsPage state={state} onOpenSetup={() => setPage('setup')} />
+              )}
+            </ErrorBoundary>
+          )}
         </div>
         <AppFooter version={version} />
       </main>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Alert, Button, Dialog, Input, Label, Switch } from '@ivao/atmosphere-react'
-import { Info, Plus, Trash2 } from 'lucide-react'
+import { CircleAlert, Info, Plus, Trash2 } from 'lucide-react'
 import { sameHotkey } from '@shared/hotkey'
 import type { Hotkey, HotkeyAction, MarkerCategory, MarkerSettings } from '@shared/types'
 import { type SettingsPatch, usePatchSaver } from '../hooks'
@@ -55,13 +55,14 @@ function CategoryRow({
 }: {
   category: MarkerCategory
   conflict: string | null
-  onChange: (category: MarkerCategory) => void
+  /** Only the fields that changed: a quick second edit (a colour right after the name) must not undo the first. */
+  onChange: (patch: Partial<MarkerCategory>) => void
   onRemove: () => void
 }): React.JSX.Element {
   const [name, setName] = useState(category.name)
   const [confirmRemove, setConfirmRemove] = useState(false)
   useEffect(() => setName(category.name), [category.name])
-  const onHotkey = useCallback((hotkey: Hotkey | null) => onChange({ ...category, hotkey }), [category, onChange])
+  const onHotkey = useCallback((hotkey: Hotkey | null) => onChange({ hotkey }), [onChange])
 
   return (
     <li className="flex flex-wrap items-start gap-x-4 gap-y-2 py-3 first:pt-0 last:pb-0">
@@ -70,9 +71,9 @@ function CategoryRow({
           aria-label="Category name"
           value={name}
           onChange={(event) => setName(event.target.value)}
-          onBlur={() => name.trim() && name !== category.name && onChange({ ...category, name: name.trim() })}
+          onBlur={() => name.trim() && name !== category.name && onChange({ name: name.trim() })}
         />
-        <ColorPicker value={category.color} onChange={(color) => onChange({ ...category, color })} />
+        <ColorPicker value={category.color} onChange={(color) => onChange({ color })} />
       </div>
       <HotkeyInput label={category.name} value={category.hotkey} onChange={onHotkey} conflict={conflict} />
       <Button variant="ghost" size="icon" aria-label={`Remove ${category.name}`} onClick={() => setConfirmRemove(true)}>
@@ -116,25 +117,33 @@ export function MarkersCard({
   useEffect(() => setPreRoll(String(settings.preRollSeconds)), [settings.preRollSeconds])
 
   const saver = usePatchSaver(settings, window.api.saveMarkerSettings)
+  // Refused changes are shown (e.g. a voice-note key that is also a push-to-talk key).
+  const [error, setError] = useState<string | null>(null)
   const save = useCallback(
-    (patch: SettingsPatch<MarkerSettings>) =>
-      void saver(patch).catch((error: unknown) => console.error('Could not save the marker settings', error)),
+    (patch: SettingsPatch<MarkerSettings>) => {
+      setError(null)
+      void saver(patch).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+    },
     [saver]
   )
 
   /** Every bound hotkey with the name of what it does, to flag duplicates. */
-  const bindings: [Hotkey | null, string][] = [
-    ...ACTIONS.map(({ action, label }): [Hotkey | null, string] => [settings.hotkeys[action], label]),
-    ...settings.categories.map((category): [Hotkey | null, string] => [category.hotkey, category.name])
+  const bindings: [Hotkey | null, string, string][] = [
+    ...ACTIONS.map(({ action, label }): [Hotkey | null, string, string] => [settings.hotkeys[action], label, action]),
+    ...settings.categories.map((category): [Hotkey | null, string, string] => [
+      category.hotkey,
+      category.name,
+      category.id
+    ])
   ]
   const conflictFor = (hotkey: Hotkey | null, own: string): string | null =>
-    bindings.find(([other, name]) => name !== own && sameHotkey(hotkey, other))?.[1] ?? null
+    bindings.find(([other, , id]) => id !== own && sameHotkey(hotkey, other))?.[1] ?? null
 
   const setAction = (action: HotkeyAction) => (hotkey: Hotkey | null) =>
     save((current) => ({ hotkeys: { ...current.hotkeys, [action]: hotkey } }))
 
-  const updateCategory = (updated: MarkerCategory): void =>
-    save((current) => ({ categories: current.categories.map((c) => (c.id === updated.id ? updated : c)) }))
+  const updateCategory = (id: string) => (patch: Partial<MarkerCategory>) =>
+    save((current) => ({ categories: current.categories.map((c) => (c.id === id ? { ...c, ...patch } : c)) }))
 
   const addCategory = (): void =>
     save((current) => {
@@ -195,7 +204,7 @@ export function MarkersCard({
                 label={label}
                 value={settings.hotkeys[action]}
                 onChange={setAction(action)}
-                conflict={conflictFor(settings.hotkeys[action], label)}
+                conflict={conflictFor(settings.hotkeys[action], action)}
               />
             </li>
           ))}
@@ -214,8 +223,8 @@ export function MarkersCard({
             <CategoryRow
               key={category.id}
               category={category}
-              conflict={conflictFor(category.hotkey, category.name)}
-              onChange={updateCategory}
+              conflict={conflictFor(category.hotkey, category.id)}
+              onChange={updateCategory(category.id)}
               onRemove={() =>
                 save((current) => ({ categories: current.categories.filter((c) => c.id !== category.id) }))
               }
@@ -241,6 +250,7 @@ export function MarkersCard({
         </label>
       </div>
 
+      {error && <Alert variant="destructive" Icon={CircleAlert} title="Not saved" description={error} />}
       <Alert
         Icon={Info}
         title="Aurora running as administrator?"

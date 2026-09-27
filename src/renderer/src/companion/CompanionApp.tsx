@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Button } from '@ivao/atmosphere-react'
 import {
   Circle,
@@ -15,7 +15,7 @@ import {
   Sun,
   TowerControl
 } from 'lucide-react'
-import { byTime, currentMarker, livePosition } from '@shared/markers'
+import { byTime, currentMarker, livePosition, recordingTime } from '@shared/markers'
 import type { CompanionState, Marker, PlayerCommand, PttTarget, RecordingState, ReviewState } from '@shared/types'
 import type { SendCommand } from '../commands'
 import {
@@ -26,8 +26,10 @@ import {
   markerTimeLabel,
   paint
 } from '../components/MarkerList'
+import { ConfirmDeleteButton } from '../components/ConfirmDeleteButton'
 import { NoteItem } from '../components/NoteItem'
 import { PlaybackRates } from '../components/PlaybackRates'
+import { RecordingWarnings } from '../components/RecordingWarnings'
 import { SkipButton } from '../components/SkipButton'
 import { Timeline } from '../components/Timeline'
 import { formatDuration } from '../format'
@@ -63,42 +65,117 @@ function useCompanionTheme(): [boolean, () => void] {
   return [night, toggle]
 }
 
+/**
+ * The notes window on the trainer's PC shows this page too: a voice note played
+ * there comes out of the PC, into the recording (desktop audio) or a shared screen.
+ */
+const ON_THIS_PC = /Electron\//.test(navigator.userAgent)
+
 const PTT_BUTTONS: Record<PttTarget, { name: string; Icon: typeof Mic }> = {
   voiceChat: { name: 'Voice chat', Icon: Headphones },
   aurora: { name: 'Aurora', Icon: TowerControl }
 }
 
-/** Hold to talk: the PC holds the voice chat's or Aurora's push-to-talk key meanwhile. */
-function PttButtons({ keys, send }: { keys: CompanionState['pttKeys']; send: SendCommand }): React.JSX.Element | null {
-  const [held, setHeld] = useState<PttTarget[]>([])
-  if (keys.length === 0) return null
-  const release = (target: PttTarget): void => {
-    setHeld((current) => current.filter((item) => item !== target))
-    send('releasePtt', target)
-  }
+/** While a button is held the app is told again this often; it lets go if that stops (see the app's keep-alive). */
+const PTT_KEEPALIVE_MS = 1000
+
+/**
+ * Hold to talk: the PC holds the voice chat's or Aurora's push-to-talk key
+ * meanwhile. The button shows what the PC really does, not only the finger.
+ */
+function PttButtons({
+  state,
+  deviceId,
+  connected,
+  request,
+  onError
+}: {
+  state: CompanionState
+  deviceId: string | null
+  connected: boolean
+  request: (name: 'holdPtt' | 'releasePtt', target: PttTarget) => Promise<void>
+  onError: (message: string) => void
+}): React.JSX.Element | null {
+  // Buttons under the finger right now.
+  const [pressed, setPressed] = useState<PttTarget[]>([])
+  const pressedRef = useRef(pressed)
+  pressedRef.current = pressed
+
+  const release = useCallback(
+    (target: PttTarget) => {
+      setPressed((current) => current.filter((item) => item !== target))
+      void request('releasePtt', target).catch(() => undefined)
+    },
+    [request]
+  )
+  const hold = useCallback(
+    (target: PttTarget) =>
+      request('holdPtt', target).catch((error: unknown) => {
+        // Refused (a recording isn't open, the time limit, another device…): stop asking.
+        setPressed((current) => current.filter((item) => item !== target))
+        onError(error instanceof Error ? error.message : String(error))
+      }),
+    [request, onError]
+  )
+
+  // "Still holding" every second: a locked phone or a lost Wi-Fi stops it, and the PC lets go.
+  useEffect(() => {
+    if (pressed.length === 0) return
+    const timer = window.setInterval(() => pressedRef.current.forEach((target) => void hold(target)), PTT_KEEPALIVE_MS)
+    return () => window.clearInterval(timer)
+  }, [pressed.length, hold])
+
+  // The page goes to the background (home button, a call, the screen off): let go at once.
+  useEffect(() => {
+    const releaseAll = (): void => pressedRef.current.forEach(release)
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'hidden') releaseAll()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', releaseAll)
+    window.addEventListener('blur', releaseAll)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', releaseAll)
+      window.removeEventListener('blur', releaseAll)
+    }
+  }, [release])
+
+  if (state.pttKeys.length === 0) return null
   return (
     <div className="grid grid-cols-2 gap-2">
-      {keys.map(({ target, label }) => {
+      {state.pttKeys.map(({ target, label }) => {
         const { name, Icon } = PTT_BUTTONS[target]
-        const active = held.includes(target)
+        const holder = state.pttHolds.find((item) => item.target === target)
+        const mine = holder !== undefined && holder.deviceId === deviceId
+        const finger = pressed.includes(target)
+        const text = mine
+          ? `Talking: ${name}`
+          : holder
+            ? `Held on ${holder.deviceName}`
+            : finger
+              ? 'Pressing…'
+              : `Hold: ${name}`
         return (
           <Button
             key={target}
             size="lg"
-            variant={active ? 'destructive' : 'outline'}
+            variant={mine ? 'destructive' : 'outline'}
             className="h-16 touch-none select-none"
+            disabled={!connected || (holder !== undefined && !mine)}
             onPointerDown={(event) => {
               event.currentTarget.setPointerCapture(event.pointerId)
-              setHeld((current) => [...current, target])
-              send('holdPtt', target)
+              setPressed((current) => (current.includes(target) ? current : [...current, target]))
+              void hold(target)
             }}
             onPointerUp={() => release(target)}
             onPointerCancel={() => release(target)}
+            onLostPointerCapture={() => pressedRef.current.includes(target) && release(target)}
             onContextMenu={(event) => event.preventDefault()}
           >
             <Icon className="size-5" aria-hidden />
             <span className="flex flex-col items-start leading-tight">
-              {active ? `Talking: ${name}` : `Hold: ${name}`}
+              {text}
               <span className="text-xs font-normal opacity-70">{label}</span>
             </span>
           </Button>
@@ -118,20 +195,21 @@ const STATUS_TEXT: Record<ConnectionStatus, string> = {
 function RecordingView({
   recording,
   state,
-  send
+  send,
+  clockOffsetMs
 }: {
   recording: RecordingState
   state: CompanionState
   send: SendCommand
+  clockOffsetMs: number
 }): React.JSX.Element {
-  const now = useNow(true)
+  // The app's clock: this device's may be off by seconds.
+  const now = useNow(true) + clockOffsetMs
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-3">
         <span className="size-3 animate-pulse rounded-full bg-semantic-red-500" aria-hidden />
-        <span className="font-mono text-3xl tabular-nums">
-          {formatDuration(recording.elapsedMs + (now - recording.sampledAt))}
-        </span>
+        <span className="font-mono text-3xl tabular-nums">{formatDuration(recordingTime(recording, now))}</span>
         <span className="text-sm text-muted-foreground">
           <span className="font-mono">{recording.metadata.position}</span> · trainee {recording.metadata.traineeVid}
         </span>
@@ -160,6 +238,7 @@ function RecordingView({
           {recording.dictatingMarkerId ? 'Release' : 'Hold: note'}
         </Button>
       </div>
+      <RecordingWarnings hiddenWindowsError={state.hiddenWindowsError} warnings={recording.warnings} />
       {state.voiceNoteHotkey && (
         <p className="-mt-2 text-xs text-muted-foreground">
           The note is recorded by the PC’s microphone. Push-to-talk on the PC: {state.voiceNoteHotkey}.
@@ -172,6 +251,7 @@ function RecordingView({
         openRangeId={recording.openRangeId}
         dictatingMarkerId={recording.dictatingMarkerId}
         send={send}
+        notesPlayable={!ON_THIS_PC}
       />
     </div>
   )
@@ -206,6 +286,11 @@ function MarkerDetail({
         >
           {markerTimeLabel(marker, null)}
         </button>
+        <ConfirmDeleteButton
+          className="ml-auto"
+          label={`Delete marker ${marker.number}`}
+          onConfirm={() => send('deleteMarker', review.folderName, marker.id)}
+        />
       </div>
       <CategoryChips
         categories={state.categories}
@@ -265,13 +350,16 @@ function MarkerDetail({
 function ReviewView({
   review,
   state,
-  send
+  send,
+  clockOffsetMs
 }: {
   review: ReviewState
   state: CompanionState
   send: SendCommand
+  clockOffsetMs: number
 }): React.JSX.Element {
-  const now = useNow(review.player.playing, 200)
+  // The app's clock: at 10x a second of difference would be ten seconds of video.
+  const now = useNow(review.player.playing, 200) + clockOffsetMs
   const positionMs = livePosition(review.player, now, review.durationMs)
   const markers = byTime(review.markers)
   const [follow, setFollow] = useState(true)
@@ -341,6 +429,12 @@ function ReviewView({
         <input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />
         Follow playback
       </label>
+      {ON_THIS_PC && (
+        <p className="text-xs text-muted-foreground">
+          Voice notes played here come out of this PC: if you share Training Recording System on Discord with its sound,
+          the trainee hears them. Listen on a phone or tablet, or share without sound.
+        </p>
+      )}
 
       {shown ? (
         <MarkerDetail marker={shown} review={review} state={state} positionMs={positionMs} send={send} />
@@ -386,7 +480,12 @@ function ReviewView({
 }
 
 export function CompanionApp(): React.JSX.Element {
-  const { status, state, send: request } = useCompanionConnection()
+  const { status, state, deviceId, clockOffsetMs, send: request } = useCompanionConnection()
+  const pttRequest = useCallback(
+    (name: 'holdPtt' | 'releasePtt', target: PttTarget) => request(name, target),
+    [request]
+  )
+  const showError = useCallback((message: string) => setError(message), [])
   const [night, toggleTheme] = useCompanionTheme()
   const [error, setError] = useState<string | null>(null)
   const send: SendCommand = (name, ...args) => {
@@ -416,7 +515,15 @@ export function CompanionApp(): React.JSX.Element {
       </header>
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 p-4">
         {error && <Alert variant="destructive" Icon={CircleAlert} title="Something went wrong" description={error} />}
-        {status !== 'unpaired' && state && <PttButtons keys={state.pttKeys} send={send} />}
+        {status !== 'unpaired' && state && (
+          <PttButtons
+            state={state}
+            deviceId={deviceId}
+            connected={status === 'connected'}
+            request={pttRequest}
+            onError={showError}
+          />
+        )}
         {status === 'unpaired' ? (
           <Alert
             Icon={CircleAlert}
@@ -426,9 +533,15 @@ export function CompanionApp(): React.JSX.Element {
         ) : !state ? (
           <p className="text-sm text-muted-foreground">Connecting to Training Recording System…</p>
         ) : state.recording ? (
-          <RecordingView recording={state.recording} state={state} send={send} />
+          <RecordingView recording={state.recording} state={state} send={send} clockOffsetMs={clockOffsetMs} />
         ) : state.review ? (
-          <ReviewView key={state.review.folderName} review={state.review} state={state} send={send} />
+          <ReviewView
+            key={state.review.folderName}
+            review={state.review}
+            state={state}
+            send={send}
+            clockOffsetMs={clockOffsetMs}
+          />
         ) : (
           <p className="text-sm text-muted-foreground">
             Nothing to show yet: start a recording, or open a session for review in the app.

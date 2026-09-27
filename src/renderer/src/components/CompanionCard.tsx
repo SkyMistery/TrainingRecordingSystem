@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Alert, Button, Input, Label, Switch } from '@ivao/atmosphere-react'
 import { CircleAlert, ExternalLink, KeyRound, NotebookPen, QrCode, ShieldAlert } from 'lucide-react'
 import type { AppState, CompanionInfo, CompanionSettings, Hotkey, PttTarget } from '@shared/types'
+import { ConfirmDeleteButton } from './ConfirmDeleteButton'
 import { HotkeyInput } from './HotkeyInput'
 import { SetupSection, type SectionProps } from './SetupSection'
 
@@ -46,7 +47,7 @@ export function CompanionPairing({ info, concealed }: { info: CompanionInfo; con
           <span className="text-semantic-red-600">No network connection found.</span>
         )}
         <p className="text-xs text-muted-foreground">
-          The link contains a secret code: share it only with your own devices. Windows may ask to allow the app on
+          The link pairs one device, once: scan it only with your own devices. Windows may ask to allow the app on
           private networks — allow it, or the tablet can’t connect.
         </p>
       </div>
@@ -66,12 +67,14 @@ export function CompanionCard({
   const info = state.companion
   const [port, setPort] = useState(String(settings.port))
   const [confirmReset, setConfirmReset] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   useEffect(() => setPort(String(settings.port)), [settings.port])
 
-  const save = (patch: Partial<CompanionSettings>): void =>
-    void window.api
-      .saveCompanionSettings(patch)
-      .catch((error: unknown) => console.error('Could not save the Companion settings', error))
+  const run = (action: () => Promise<void>): void => {
+    setError(null)
+    action().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+  }
+  const save = (patch: Partial<CompanionSettings>): void => run(() => window.api.saveCompanionSettings(patch))
 
   return (
     <SetupSection
@@ -93,11 +96,15 @@ export function CompanionCard({
       {settings.enabled && (
         <>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => void window.api.openNotesWindow()} disabled={!info.running}>
+            <Button onClick={() => run(() => window.api.openNotesWindow())} disabled={!info.running}>
               <NotebookPen className="size-4" aria-hidden />
               Open notes window
             </Button>
-            <Button variant="outline" onClick={() => void window.api.openCompanionInBrowser()} disabled={!info.running}>
+            <Button
+              variant="outline"
+              onClick={() => run(() => window.api.openCompanionInBrowser())}
+              disabled={!info.running}
+            >
               <ExternalLink className="size-4" aria-hidden />
               Open in browser
             </Button>
@@ -111,15 +118,53 @@ export function CompanionCard({
             Allow a tablet or phone on the same network
           </label>
 
-          {settings.lan && <CompanionPairing info={info} concealed={state.review !== null} />}
+          {settings.lan && <CompanionPairing info={info} concealed={false} />}
+
+          <div className="flex flex-col gap-2">
+            <h3 className="text-base">Paired devices</h3>
+            {info.devices.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No device paired yet.</p>
+            ) : (
+              <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
+                {info.devices.map((device) => (
+                  <li key={device.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                    <span
+                      className={`size-2 shrink-0 rounded-full ${device.connected ? 'bg-semantic-green-500' : 'bg-fuselage-400'}`}
+                      aria-hidden
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium">{device.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        Paired {new Date(device.pairedAt).toLocaleString()}
+                        {device.connected
+                          ? ' · connected'
+                          : device.lastSeenAt
+                            ? ` · last seen ${new Date(device.lastSeenAt).toLocaleString()}`
+                            : ''}
+                      </div>
+                    </div>
+                    <ConfirmDeleteButton
+                      label={`Remove ${device.name}`}
+                      onConfirm={() => run(() => window.api.removeCompanionDevice(device.id))}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="text-xs text-muted-foreground">
+              A device you don’t recognise, or one you lost: remove it. It can’t connect again without a new pairing.
+            </p>
+          </div>
 
           <div className="flex flex-col gap-3">
             <div>
               <h3 className="text-base">Push-to-talk buttons</h3>
               <p className="text-xs text-muted-foreground">
                 Optional. For each key set here the Companion shows a button: holding it holds the key on this PC, so
-                you can talk in the voice chat or on frequency from the tablet or phone. Right Ctrl, AltGr and the other
-                modifier keys work alone here. The key also reaches the window in front, as when you press it.
+                you can talk in the voice chat or on frequency from the tablet or phone, during a recording or a review.
+                Right Ctrl, AltGr and the other modifier keys work alone here. The key also reaches the window in front,
+                as when you press it, so keys like Enter or Alt combinations are refused. It is released as soon as the
+                device stops holding it, and after 60 s (Aurora) or 5 minutes (voice chat) in any case.
               </p>
             </div>
             <ul className="flex flex-col gap-3">
@@ -167,7 +212,7 @@ export function CompanionCard({
                   size="sm"
                   onClick={() => {
                     setConfirmReset(false)
-                    void window.api.newCompanionToken()
+                    run(() => window.api.unpairAllDevices())
                   }}
                 >
                   Unpair
@@ -176,17 +221,18 @@ export function CompanionCard({
             ) : (
               <Button variant="outline" size="sm" onClick={() => setConfirmReset(true)}>
                 <KeyRound className="size-4" aria-hidden />
-                New pairing code
+                Unpair all devices
               </Button>
             )}
           </div>
+          {error && <Alert variant="destructive" Icon={CircleAlert} title="Companion" description={error} />}
 
           {settings.lan && info.publicNetwork && (
             <Alert
               variant="destructive"
               Icon={ShieldAlert}
               title="Your network is set to Public"
-              description="Windows blocks tablets from connecting on Public networks. In Windows Settings → Network & internet → Wi-Fi (or Ethernet) → your network, set “Network profile type” to Private, then reopen this page."
+              description="Windows blocks tablets on Public networks, and that is right on a network that isn’t yours (hotel, university, café): there, turn network access off. Only on your home network, set its profile to Private: Windows Settings → Network & internet → Wi-Fi (or Ethernet) → your network → “Network profile type”."
             />
           )}
           {info.error && (

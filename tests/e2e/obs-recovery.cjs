@@ -1,81 +1,22 @@
-// End-to-end test of the app's OBS robustness against the real OBS:
+// End-to-end test of the app's OBS robustness against the real OBS, in an
+// isolated app instance (own settings and sessions folder in %TEMP%):
 // 1. the trainer switches OBS to their own profile while the app is connected:
 //    starting a session must not write into it;
 // 2. a pause in OBS keeps marker times right;
-// 3. the app dies while OBS records: started again, it continues the session
+// 3. another scene chosen in OBS during the recording is switched back, and said;
+// 4. the app dies while OBS records: started again, it continues the session
 //    and the recording ends up in the session folder;
-// 4. quitting gives OBS back the trainer's profile.
-// Uses the real settings (like markers.cjs): close the app first. OBS must be
-// idle, on the trainer's own profile. Usage: node obs-recovery.cjs <obs-password>
-const { spawn } = require('node:child_process')
-const { existsSync, readFileSync, rmSync } = require('node:fs')
-const { join } = require('node:path')
-const ROOT = require('node:path').resolve(__dirname, '../..').split('\\').join('/')
-const { OBSWebSocket } = require(`${ROOT}/node_modules/obs-websocket-js`)
-const SESSIONS = join(process.env.USERPROFILE, 'Documents', 'IVAO TRS', 'Sessions')
+// 5. a recording started from OBS after the session ended never lands in (or
+//    replaces the video of) that session, even after the app restarts;
+// 6. quitting gives OBS back the trainer's profile, unchanged.
+// Needs: the app closed (one app per OBS), OBS idle on the trainer's own profile, TRS_OBS_PASSWORD set.
+const { existsSync, readFileSync, readdirSync, rmSync, statSync } = require('node:fs')
+const { join, resolve } = require('node:path')
+const { OBSWebSocket } = require('obs-websocket-js')
+const { check, isolatedSettings, launch, obsPassword, realSettings, report, sleep, waitForState } = require('./lib.cjs')
+
+const PASSWORD = obsPassword()
 const PORT = 9339
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-let failures = 0
-const check = (label, ok, detail = '') => {
-  if (!ok) failures++
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? '  — ' + detail : ''}`)
-}
-
-function startApp() {
-  const app = spawn(`${ROOT}/node_modules/electron/dist/electron.exe`, ['.', `--remote-debugging-port=${PORT}`], {
-    cwd: ROOT,
-    stdio: 'ignore'
-  })
-  const exited = new Promise((r) => app.on('exit', r))
-  return { app, exited }
-}
-
-async function connect() {
-  let target
-  for (let i = 0; i < 40 && !target; i++) {
-    await sleep(500)
-    try {
-      const list = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json()
-      target = list.find((t) => t.type === 'page' && t.url.endsWith('index.html'))
-    } catch {}
-  }
-  if (!target) throw new Error('app did not start')
-  const ws = new WebSocket(target.webSocketDebuggerUrl)
-  await new Promise((r) => ws.addEventListener('open', r))
-  let id = 0
-  const evaluate = (expression) =>
-    new Promise((resolve, reject) => {
-      const n = ++id
-      const h = (m) => {
-        const d = JSON.parse(m.data)
-        if (d.id !== n) return
-        ws.removeEventListener('message', h)
-        if (d.result?.exceptionDetails) reject(new Error(d.result.exceptionDetails.exception?.description))
-        else resolve(d.result?.result?.value)
-      }
-      ws.addEventListener('message', h)
-      ws.send(
-        JSON.stringify({
-          id: n,
-          method: 'Runtime.evaluate',
-          params: { expression, awaitPromise: true, returnByValue: true }
-        })
-      )
-    })
-  const state = () => evaluate('window.api.getState()')
-  return { evaluate, state, close: () => ws.close() }
-}
-
-async function waitFor(page, condition, ms = 20000) {
-  const until = Date.now() + ms
-  let s
-  while (Date.now() < until) {
-    s = await page.state().catch(() => null)
-    if (s && condition(s)) return s
-    await sleep(300)
-  }
-  return s
-}
 
 async function profileParams(obs) {
   const read = async (parameterCategory, parameterName) =>
@@ -89,10 +30,8 @@ async function profileParams(obs) {
 }
 
 async function main() {
-  const password = process.argv[2]
-  if (!password) throw new Error('Usage: node obs-recovery.cjs <obs-websocket-password>')
   const obs = new OBSWebSocket()
-  await obs.connect('ws://127.0.0.1:4455', password)
+  await obs.connect('ws://127.0.0.1:4455', PASSWORD)
   if ((await obs.call('GetRecordStatus')).outputActive) throw new Error('OBS is recording: stop it first')
   const own = {
     profile: (await obs.call('GetProfileList')).currentProfileName,
@@ -102,24 +41,36 @@ async function main() {
   const ownParams = await profileParams(obs)
   console.log('trainer profile:', own.profile, '/', own.collection, JSON.stringify(ownParams))
 
-  let run = startApp()
-  let page = await connect()
+  const settings = isolatedSettings('recovery', { capture: { ...realSettings().capture, hiddenWindows: [] } })
+  const SESSIONS = settings.sessionsDir
+  let run = await launch({ name: 'recovery', port: PORT, settings })
   let folderName = null
   try {
-    await waitFor(page, (s) => s.obs.status === 'connected' && !s.busy)
+    await run.evaluate(
+      `window.api.connectObs({ host: '127.0.0.1', port: 4455, password: ${JSON.stringify(PASSWORD)} }).catch((e) => e.message)`
+    )
+    await waitForState(run.evaluate, (s) => s.obs.status === 'connected' && !s.busy)
+    // Closed once normally: Chromium keeps the key that decrypts the saved password
+    // in memory until then, and the killed instance below must find it.
+    await run.close()
+    run = await launch({ name: 'recovery', port: PORT, fresh: false })
+    const connected = await waitForState(run.evaluate, (s) => s.obs.status === 'connected' && !s.busy, 30_000)
+    check('connects by itself with the saved password', connected.obs.status === 'connected', connected.obs.error)
 
     // 1. The trainer switches OBS back to their own profile while the app is idle.
     await obs.call('SetCurrentSceneCollection', { sceneCollectionName: own.collection })
     await obs.call('SetCurrentProfile', { profileName: own.profile })
     await sleep(1500)
-    await page.evaluate(
+    await run.evaluate(
       `window.api.startSession({traineeVid:'000000',traineeName:'E2E test',position:'TEST_APP',trainingType:'Recovery',trainerVid:'',date:'2026-09-23'}, true)`
     )
-    let s = await waitFor(page, (st) => st.recording !== null)
+    let s = await waitForState(run.evaluate, (st) => st.recording !== null)
     folderName = s.recording?.folderName
     const during = (await obs.call('GetProfileList')).currentProfileName
     check('recording started after the trainer switched profile', !!folderName, folderName)
     check('the app switched back to its own profile to record', during === 'IVAO TRS', during)
+    const program = (await obs.call('GetCurrentProgramScene')).currentProgramSceneName
+    check('OBS records the app’s scene', program === 'TRS Recording', program)
 
     // 2. Pause in OBS: marker times must not advance while paused.
     await sleep(2000)
@@ -127,8 +78,8 @@ async function main() {
     await sleep(3000)
     await obs.call('ResumeRecord')
     await sleep(1000)
-    await page.evaluate(`window.api.command('addMarker')`)
-    s = await waitFor(page, (st) => st.recording?.markers.length === 1)
+    await run.evaluate(`window.api.command('addMarker')`)
+    s = await waitForState(run.evaluate, (st) => st.recording?.markers.length === 1)
     const pressed = s.recording.markers[0].pressedAtMs
     const obsTime = (await obs.call('GetRecordStatus')).outputDuration
     check(
@@ -137,49 +88,103 @@ async function main() {
       `marker ${pressed} ms, OBS ${obsTime} ms`
     )
 
-    // 3. The app dies while OBS keeps recording.
+    // 3. Another scene chosen in OBS: put back, and the trainer is told.
+    await obs.call('CreateScene', { sceneName: 'E2E other scene' }).catch(() => undefined)
+    await obs.call('SetCurrentProgramScene', { sceneName: 'E2E other scene' })
+    s = await waitForState(run.evaluate, (st) => (st.recording?.warnings.length ?? 0) > 0, 5000)
+    const back = (await obs.call('GetCurrentProgramScene')).currentProgramSceneName
+    check('another scene chosen in OBS is switched back', back === 'TRS Recording', back)
+    check('and the recording shows a warning', (s.recording?.warnings.length ?? 0) > 0, s.recording?.warnings.at(-1))
+    await obs.call('RemoveScene', { sceneName: 'E2E other scene' }).catch(() => undefined)
+
+    // 4. The app dies while OBS keeps recording.
     run.app.kill()
     await run.exited
-    page.close()
     await sleep(1500)
     check('OBS keeps recording after the app died', (await obs.call('GetRecordStatus')).outputActive)
-    run = startApp()
-    page = await connect()
-    s = await waitFor(page, (st) => st.recording !== null)
-    check('restarted app continues the same session', s.recording?.folderName === folderName, s.recording?.folderName)
+    run = await launch({ name: 'recovery', port: PORT, fresh: false })
+    s = await waitForState(run.evaluate, (st) => st.recording !== null, 30_000)
+    if (
+      !check(
+        'restarted app continues the same session',
+        s.recording?.folderName === folderName,
+        s.recording?.folderName
+      )
+    ) {
+      console.log(
+        '[e2e] OBS:',
+        JSON.stringify(s.obs),
+        '\n[e2e] app log:\n',
+        run.output().split(/\r?\n/).slice(-30).join('\n')
+      )
+    }
     check('markers from before are kept', s.recording?.markers.length === 1)
     await sleep(1500)
-    await page.evaluate(`window.api.command('addMarker')`)
-    s = await waitFor(page, (st) => st.recording?.markers.length === 2)
+    await run.evaluate(`window.api.command('addMarker')`)
+    s = await waitForState(run.evaluate, (st) => st.recording?.markers.length === 2)
     check(
       'a new marker continues the numbering and the clock',
       s.recording?.markers[1]?.number === 2 && s.recording.markers[1].pressedAtMs > pressed,
       JSON.stringify(s.recording?.markers.map((m) => [m.number, m.pressedAtMs]))
     )
-    await page.evaluate('window.api.stopSession()')
-    await waitFor(page, (st) => st.recording === null)
-    const file = JSON.parse(readFileSync(join(SESSIONS, folderName, 'session.json'), 'utf8'))
+
+    // 5. Stopped from OBS itself, then OBS records again ("to continue"), then the app restarts.
+    await obs.call('StopRecord')
+    s = await waitForState(run.evaluate, (st) => st.recording === null)
+    check('stopping in OBS ends the session', s.recording === null)
+    check('and says so', s.notice?.title === 'OBS stopped the recording', s.notice?.title)
+    const sessionFolder = join(SESSIONS, folderName)
+    let file = JSON.parse(readFileSync(join(sessionFolder, 'session.json'), 'utf8'))
     check(
-      'recording moved into the session folder',
-      file.recording?.file === 'recording.mp4' && existsSync(join(SESSIONS, folderName, 'recording.mp4')),
+      'recording moved into the session folder, session marked as ended',
+      file.recording?.file === 'recording.mp4' &&
+        Boolean(file.recording?.endedAt) &&
+        existsSync(join(sessionFolder, 'recording.mp4')),
       JSON.stringify(file.recording)
     )
-    check('OBS stopped recording', !(await obs.call('GetRecordStatus')).outputActive)
+    const video = statSync(join(sessionFolder, 'recording.mp4'))
+    await sleep(1500)
+    const idleDir = (await obs.call('GetRecordDirectory')).recordDirectory
+    check('OBS no longer records into the session folder', resolve(idleDir) !== resolve(sessionFolder), idleDir)
+    await obs.call('StartRecord')
+    await sleep(3000)
+    run.app.kill()
+    await run.exited
+    run = await launch({ name: 'recovery', port: PORT, fresh: false })
+    s = await waitForState(run.evaluate, (st) => st.obs.status === 'connected' && !st.busy, 30_000)
+    await sleep(2000)
+    s = await run.evaluate('window.api.getState()')
+    check(
+      'a recording started from OBS does not reopen the finished session',
+      s.recording === null,
+      s.recording?.folderName
+    )
+    const stray = await obs.call('StopRecord')
+    await sleep(1500)
+    file = JSON.parse(readFileSync(join(sessionFolder, 'session.json'), 'utf8'))
+    const after = statSync(join(sessionFolder, 'recording.mp4'))
+    check(
+      'the session’s video was not replaced',
+      after.size === video.size && after.mtimeMs === video.mtimeMs && file.recording.file === 'recording.mp4',
+      `${video.size} → ${after.size}`
+    )
+    check(
+      'only one video in the session folder',
+      readdirSync(sessionFolder).filter((n) => n.endsWith('.mp4')).length === 1
+    )
+    if (stray.outputPath) rmSync(stray.outputPath, { force: true })
 
-    // 4. Quit: OBS goes back to the trainer's profile, which was never changed.
-    await page.evaluate('window.close()').catch(() => undefined)
-    page.close()
-    const exited = await Promise.race([run.exited.then(() => true), sleep(15000).then(() => false)])
-    check('app quits by itself', exited)
+    // 6. Quit: OBS goes back to the trainer's profile, which was never changed.
+    await run.close()
     await sleep(500)
-    const after = {
+    const workspace = {
       profile: (await obs.call('GetProfileList')).currentProfileName,
       collection: (await obs.call('GetSceneCollectionList')).currentSceneCollectionName
     }
     check(
       "OBS is back on the trainer's profile",
-      after.profile === own.profile && after.collection === own.collection,
-      JSON.stringify(after)
+      workspace.profile === own.profile && workspace.collection === own.collection,
+      JSON.stringify(workspace)
     )
     const afterParams = await profileParams(obs)
     check(
@@ -191,19 +196,19 @@ async function main() {
     // Safety net: never leave a test recording running or OBS on the app's profile.
     const status = await obs.call('GetRecordStatus').catch(() => null)
     const dir = (await obs.call('GetRecordDirectory').catch(() => null))?.recordDirectory ?? ''
-    if (status?.outputActive && folderName && dir.includes(folderName))
+    if (status?.outputActive && resolve(dir).startsWith(resolve(SESSIONS)))
       await obs.call('StopRecord').catch(() => undefined)
-    run.app.kill()
+    if (run.app.exitCode === null) await run.close()
     await sleep(1000)
     if ((await obs.call('GetProfileList')).currentProfileName === 'IVAO TRS') {
       await obs.call('SetCurrentSceneCollection', { sceneCollectionName: own.collection }).catch(() => undefined)
       await obs.call('SetCurrentProfile', { profileName: own.profile }).catch(() => undefined)
     }
     await obs.disconnect()
-    if (folderName) rmSync(join(SESSIONS, folderName), { recursive: true, force: true })
+    rmSync(SESSIONS, { recursive: true, force: true })
+    rmSync(run.userData, { recursive: true, force: true })
   }
-  console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) failed.`)
-  process.exitCode = failures === 0 ? 0 : 1
+  report()
 }
 
 main().catch((error) => {

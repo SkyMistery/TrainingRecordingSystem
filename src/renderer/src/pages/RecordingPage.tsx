@@ -1,27 +1,40 @@
-import { useState } from 'react'
+import { memo, useCallback, useState } from 'react'
 import { Alert, Button, CardContent, CardDescription, CardHeader, CardRoot, CardTitle } from '@ivao/atmosphere-react'
 import { CircleAlert, Flag, Mic, MoveHorizontal, Square } from 'lucide-react'
 import type { AppState, RecordingState } from '@shared/types'
 import type { SendCommand } from '../commands'
 import { AudioMixer } from '../components/AudioMixer'
 import { MarkerList } from '../components/MarkerList'
+import { RecordingWarnings } from '../components/RecordingWarnings'
+import { recordingTime } from '@shared/markers'
 import { formatDuration } from '../format'
-import { useAudioLevels, useNow } from '../hooks'
+import { useNow } from '../hooks'
+
+/** The clock ticks four times a second: only this part re-renders, not the marker list. */
+const ElapsedTime = memo(function ElapsedTime({ recording }: { recording: RecordingState }): React.JSX.Element {
+  const now = useNow(true)
+  return (
+    <div className="font-mono text-5xl font-medium tabular-nums" aria-label="Elapsed time">
+      {formatDuration(recordingTime(recording, now))}
+      {recording.paused && <span className="ml-3 align-middle text-base text-semantic-yellow-700">Paused in OBS</span>}
+    </div>
+  )
+})
+
+const Markers = memo(MarkerList)
 
 export function RecordingPage({ state, recording }: { state: AppState; recording: RecordingState }): React.JSX.Element {
-  const now = useNow(true)
-  const levels = useAudioLevels()
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const elapsed = recording.elapsedMs + (now - recording.sampledAt)
   const { metadata } = recording
   const { hotkeys } = state.markerSettings
 
-  const run = (action: () => Promise<void>): void => {
+  const run = useCallback((action: () => Promise<void>): void => {
     setError(null)
     action().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-  }
-  const send: SendCommand = (name, ...args) => run(() => window.api.command(name, ...args))
+  }, [])
+  // Stable, so the marker list only re-renders when the markers change.
+  const send = useCallback<SendCommand>((name, ...args) => run(() => window.api.command(name, ...args)), [run])
 
   return (
     <div className="flex flex-col gap-6">
@@ -33,9 +46,7 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
               <span className="relative inline-flex size-4 rounded-full bg-semantic-red-500" />
             </span>
             <div>
-              <div className="font-mono text-5xl font-medium tabular-nums" aria-label="Elapsed time">
-                {formatDuration(elapsed)}
-              </div>
+              <ElapsedTime recording={recording} />
               <div className="mt-1 text-sm text-muted-foreground">
                 <span className="font-mono">{metadata.position}</span> · {metadata.trainingType} · trainee{' '}
                 {metadata.traineeVid}
@@ -69,6 +80,7 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
         </CardContent>
       </CardRoot>
 
+      <RecordingWarnings hiddenWindowsError={state.hiddenWindowsError} warnings={recording.warnings} />
       {error && <Alert variant="destructive" Icon={CircleAlert} title="Something went wrong" description={error} />}
       {state.microphoneError && (
         <Alert
@@ -114,13 +126,15 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
           </div>
         </CardHeader>
         <CardContent>
-          <MarkerList
+          <Markers
             markers={recording.markers}
             categories={state.markerSettings.categories}
             folderName={recording.folderName}
             openRangeId={recording.openRangeId}
             dictatingMarkerId={recording.dictatingMarkerId}
             send={send}
+            // On this PC a note would play into the recording (desktop audio) and the voice chat.
+            notesPlayable={false}
           />
         </CardContent>
       </CardRoot>
@@ -132,7 +146,6 @@ export function RecordingPage({ state, recording }: { state: AppState; recording
         <CardContent>
           <AudioMixer
             sources={state.capture.audioSources}
-            levels={levels}
             onMutedChange={(id, muted) => run(() => window.api.setSourceMuted(id, muted))}
           />
         </CardContent>

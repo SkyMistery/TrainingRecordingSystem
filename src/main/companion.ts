@@ -9,11 +9,18 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import QRCode from 'qrcode'
 import { WebSocketServer, type WebSocket } from 'ws'
-import type { CompanionInfo, CompanionSettings, CompanionState, SessionCommandName } from '../shared/types'
+import type {
+  CompanionDeviceInfo,
+  CompanionInfo,
+  CompanionSettings,
+  CompanionState,
+  PlayerState,
+  SessionCommandName
+} from '../shared/types'
 import { devServerUrl } from './appPages'
-import { serveFile, sessionFilePath } from './media'
+import { isSessionMedia, serveFile, sessionFilePath } from './media'
 
-const COOKIE = 'trs_companion'
+const COOKIE = 'trs_device'
 
 const STATIC_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -23,6 +30,18 @@ const STATIC_TYPES: Record<string, string> = {
   '.woff': 'font/woff',
   '.svg': 'image/svg+xml',
   '.png': 'image/png'
+}
+
+/** What a device may download from /media: the screenshots and voice notes it shows. */
+const MEDIA_TYPES = new Set(['.png', '.wav'])
+
+/** Every answer: never framed by another page, never cached on a phone that may be lost, types as sent. */
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Content-Security-Policy': "frame-ancestors 'none'",
+  'Cache-Control': 'no-store',
+  'Referrer-Policy': 'no-referrer'
 }
 
 /** Commands the Companion page may send; settings and recording control stay in the app. */
@@ -42,19 +61,53 @@ const ALLOWED_COMMANDS = new Set<SessionCommandName>([
   'releasePtt'
 ])
 
-export function newCompanionToken(): string {
-  return randomBytes(24).toString('hex')
+/** Longest message a device may send (a note of 20,000 characters fits). */
+const MAX_MESSAGE_BYTES = 256 * 1024
+/** More devices than a trainer has: the rest is refused. */
+const MAX_CLIENTS = 10
+/** Messages per second a device may send on average, and in a burst. */
+const MESSAGE_RATE = 20
+const MESSAGE_BURST = 60
+/** A device reading nothing while the app sends state: dropped past this backlog. */
+const MAX_BACKLOG_BYTES = 4 * 1024 * 1024
+
+/** A paired device as stored in settings: never its token, only a digest of it. */
+export interface StoredDevice {
+  id: string
+  name: string
+  tokenHash: string
+  pairedAt: string
+  lastSeenAt: string | null
+}
+
+/** The device a request or socket belongs to. */
+export interface CompanionDevice {
+  id: string
+  name: string
+}
+
+interface DeviceStore {
+  list(): StoredDevice[]
+  save(devices: StoredDevice[]): Promise<void>
 }
 
 interface CompanionHooks {
   state: () => CompanionState
-  execute: (name: SessionCommandName, args: unknown[]) => Promise<void>
-  /** Clients connected or the server (re)started. */
+  /** A command from a device; errors are sent back to it. */
+  execute: (name: SessionCommandName, args: unknown[], device: CompanionDevice) => Promise<void>
+  /** The device's last connection closed: what it held (push-to-talk, a note) must be released. */
+  deviceGone: (device: CompanionDevice) => void
+  /** A new device paired: the trainer is told, in case it isn't theirs. */
+  paired: (device: CompanionDevice, address: string) => void
+  /** Whether a device may download this file of this session (the one open, a file it shows). */
+  mediaAllowed: (folderName: string, relativePath: string) => boolean
+  /** Clients connected, devices changed or the server (re)started. */
   changed: () => void
 }
 
-/** Virtual adapters (WSL, Hyper-V, VPNs, VMs) a tablet can't reach. */
-const VIRTUAL_ADAPTER = /vEthernet|WSL|Hyper-V|VirtualBox|VMware|Loopback|Bluetooth|TAP|Tailscale|ZeroTier/i
+/** Virtual adapters (WSL, Hyper-V, VPNs, VMs, hotspots) a tablet on the home network can't reach. */
+const VIRTUAL_ADAPTER =
+  /vEthernet|WSL|Hyper-V|VirtualBox|VMware|Loopback|Bluetooth|TAP|Tailscale|ZeroTier|Radmin|Hamachi|WireGuard|Wintun|NordLynx|ProtonVPN|Mullvad|OpenVPN|Cloudflare|WARP|VPN|Local Area Connection\*/i
 
 /** Real network adapters (name and address), home-network ranges (192.168.x, 10.x) first. */
 function lanAdapters(): { name: string; address: string }[] {
@@ -70,12 +123,14 @@ function lanAdapters(): { name: string; address: string }[] {
 /** Whether Windows uses the Public profile (inbound connections blocked) on this adapter. */
 function isPublicNetwork(adapter: string): Promise<boolean> {
   return new Promise((resolve) => {
+    // The name is passed as an argument, never pasted into the command.
     execFile(
       'powershell',
       [
         '-NoProfile',
         '-Command',
-        `@(Get-NetConnectionProfile -InterfaceAlias '${adapter.replace(/'/g, "''")}' | Where-Object { $_.NetworkCategory -eq "Public" }).Count`
+        '& { param($name) @(Get-NetConnectionProfile -InterfaceAlias $name | Where-Object { $_.NetworkCategory -eq "Public" }).Count }',
+        adapter
       ],
       { windowsHide: true, timeout: 10_000 },
       (error, stdout) => resolve(!error && Number(stdout.trim()) > 0)
@@ -86,10 +141,11 @@ function isPublicNetwork(adapter: string): Promise<boolean> {
 /** Unanswered pings after which a device is considered gone (phone asleep, Wi-Fi lost). */
 const HEARTBEAT_MS = 15_000
 
+const digest = (value: string): Buffer => createHash('sha256').update(value).digest()
+
 /** Constant-time comparison; hashing first gives equal lengths whatever the client sent. */
-function sameToken(a: string | undefined, b: string): boolean {
+function sameSecret(a: string | undefined | null, b: string): boolean {
   if (!a) return false
-  const digest = (value: string): Buffer => createHash('sha256').update(value).digest()
   return timingSafeEqual(digest(a), digest(b))
 }
 
@@ -107,9 +163,45 @@ function decodeParts(path: string): string[] | null {
   return parts.every((part): part is string => part !== null) ? parts : null
 }
 
-function cookieToken(req: IncomingMessage): string | undefined {
+function cookieValue(req: IncomingMessage): string | undefined {
   const cookies = req.headers.cookie?.split(';').map((part) => part.trim().split('=')) ?? []
   return cookies.find(([name]) => name === COOKIE)?.[1]
+}
+
+/** "Android · Chrome", "iPhone · Safari", "Windows · Edge": enough to recognise one's own devices. */
+function deviceName(userAgent: string | undefined): string {
+  const ua = userAgent ?? ''
+  const system = /iPad/.test(ua)
+    ? 'iPad'
+    : /iPhone/.test(ua)
+      ? 'iPhone'
+      : /Android/.test(ua)
+        ? 'Android'
+        : /Windows/.test(ua)
+          ? 'Windows'
+          : /Mac OS X/.test(ua)
+            ? 'Mac'
+            : /Linux/.test(ua)
+              ? 'Linux'
+              : 'Device'
+  const browser = /Edg\//.test(ua)
+    ? 'Edge'
+    : /Firefox\//.test(ua)
+      ? 'Firefox'
+      : /SamsungBrowser/.test(ua)
+        ? 'Samsung Internet'
+        : /Chrome\//.test(ua)
+          ? 'Chrome'
+          : /Safari\//.test(ua)
+            ? 'Safari'
+            : 'browser'
+  return `${system} · ${browser}`
+}
+
+/** Error text for a device: no Windows paths (they carry the user name). */
+function forDevice(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.replace(/[A-Za-z]:\\[^'"\n]*/g, '…').replace(/\\\\[^'"\n]*/g, '…')
 }
 
 const PAIRED_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
@@ -120,12 +212,16 @@ const UNPAIRED_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport
 <title>Training Recording System</title>
 <body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;color:#21212e">
 <h1 style="font-size:1.4rem">Not paired</h1>
-<p>Open <b>Setup → Companion</b> in Training Recording System and scan the QR code (or open its link) to pair this device.</p>`
+<p>Open <b>Setup → Companion</b> in Training Recording System and scan the QR code (or open its link) to pair this device. A pairing link works once.</p>`
+
+/** The notes window on this PC: paired by the app itself, for this run only. */
+const THIS_PC: CompanionDevice = { id: 'this-pc', name: 'Notes window (this PC)' }
 
 /**
  * Local web server for the Companion page: the trainer's private notes and a
- * remote control, on a second monitor or a tablet. Devices pair with a secret
- * link (QR code) that sets a cookie; every page, file and WebSocket needs it.
+ * remote control, on a second monitor or a tablet. A device pairs once with a
+ * one-time link (QR code) and gets its own secret in a cookie; every page,
+ * file and WebSocket needs it, and each device can be removed on its own.
  */
 export class CompanionServer {
   private server: Server | null = null
@@ -138,31 +234,51 @@ export class CompanionServer {
   private restarting: Promise<void> = Promise.resolve()
   private heartbeat: NodeJS.Timeout | null = null
   private readonly alive = new WeakSet<WebSocket>()
-  /** The device holding the push-to-talk button: its note ends if it goes away. */
-  private noteOwner: WebSocket | null = null
-  /** The devices holding a push-to-talk key (Discord, Aurora): released if they go away. */
-  private readonly pttOwners = new Map<unknown, WebSocket>()
+  private readonly deviceOf = new Map<WebSocket, CompanionDevice>()
+  /** Message allowance of each socket (token bucket). */
+  private readonly allowance = new WeakMap<WebSocket, { tokens: number; at: number }>()
+  /** The link in the QR code: good for one pairing, then replaced. Never stored. */
+  private pairingCode = randomBytes(16).toString('hex')
+  /** The notes window's secret: this run only. */
+  private readonly localToken = randomBytes(32).toString('base64url')
 
   constructor(
     private readonly hooks: CompanionHooks,
     private readonly settings: () => CompanionSettings,
-    private readonly token: () => string
+    private readonly devices: DeviceStore
   ) {}
 
   info(): CompanionInfo {
+    const connected = new Set([...this.deviceOf.values()].map((device) => device.id))
+    const devices: CompanionDeviceInfo[] = this.devices.list().map((device) => ({
+      id: device.id,
+      name: device.name,
+      pairedAt: device.pairedAt,
+      lastSeenAt: device.lastSeenAt,
+      connected: connected.has(device.id)
+    }))
     return {
       running: this.server !== null,
       error: this.error,
       urls: this.urls,
       qr: this.qr,
       clients: this.sockets?.clients.size ?? 0,
-      publicNetwork: this.publicNetwork
+      publicNetwork: this.publicNetwork,
+      devices
     }
   }
 
-  /** Link that pairs a device (the first one is this PC). */
+  /** One-time link that pairs a device (the first address is this PC). */
   pairUrl(host = '127.0.0.1'): string {
-    return `http://${host}:${this.settings().port}/pair?token=${this.token()}`
+    return `http://${host}:${this.settings().port}/pair?code=${this.pairingCode}`
+  }
+
+  /** The Companion page for the notes window on this PC, and the cookie that lets it in. */
+  localPage(): { url: string; cookie: { name: string; value: string } } {
+    return {
+      url: `http://127.0.0.1:${this.settings().port}/`,
+      cookie: { name: COOKIE, value: `${THIS_PC.id}.${this.localToken}` }
+    }
   }
 
   restart(): Promise<void> {
@@ -187,10 +303,45 @@ export class CompanionServer {
     this.hooks.changed()
   }
 
+  /** Forgets devices: their cookies stop working at once and their connections close. */
+  async removeDevices(ids: string[] | 'all'): Promise<void> {
+    const remove = (id: string): boolean => ids === 'all' || ids.includes(id)
+    await this.devices.save(this.devices.list().filter((device) => !remove(device.id)))
+    for (const [socket, device] of this.deviceOf) if (device.id !== THIS_PC.id && remove(device.id)) socket.terminate()
+    // A link seen by someone else before the removal must not pair them again.
+    this.pairingCode = randomBytes(16).toString('hex')
+    await this.refreshNetwork()
+    this.hooks.changed()
+  }
+
   /** Requests must arrive through this PC or a real network adapter, not a VPN or VM adapter. */
   private reachedThrough(req: IncomingMessage): boolean {
     const local = (req.socket.localAddress ?? '').replace(/^::ffff:/, '')
     return local === '127.0.0.1' || lanAdapters().some((adapter) => adapter.address === local)
+  }
+
+  /**
+   * The Host a browser sends is the address it was given: this PC or one of its
+   * network addresses. Anything else (a name of someone else's site pointed at
+   * this PC: DNS rebinding) is refused.
+   */
+  private validHost(req: IncomingMessage): boolean {
+    const port = this.settings().port
+    const hosts = ['127.0.0.1', 'localhost', ...lanAdapters().map((adapter) => adapter.address)]
+    return hosts.some((host) => req.headers.host === `${host}:${port}`)
+  }
+
+  /** The paired device a request comes from, from its cookie; null if none. */
+  private authenticate(req: IncomingMessage): CompanionDevice | null {
+    const value = cookieValue(req)
+    const dot = value?.indexOf('.') ?? -1
+    if (!value || dot <= 0) return null
+    const id = value.slice(0, dot)
+    const token = value.slice(dot + 1)
+    if (id === THIS_PC.id) return sameSecret(token, this.localToken) ? THIS_PC : null
+    const device = this.devices.list().find((item) => item.id === id)
+    if (!device) return null
+    return timingSafeEqual(digest(token), Buffer.from(device.tokenHash, 'hex')) ? { id, name: device.name } : null
   }
 
   private async doRestart(): Promise<void> {
@@ -204,30 +355,35 @@ export class CompanionServer {
     const server = createServer((req, res) => {
       this.handle(req, res).catch((error: unknown) => {
         console.warn('[companion] request failed', error)
-        if (!res.headersSent) res.writeHead(400)
+        if (!res.headersSent) res.writeHead(400, SECURITY_HEADERS)
         res.end()
       })
     })
-    const sockets = new WebSocketServer({ noServer: true })
+    const sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES })
     server.on('upgrade', (req, socket, head) => {
       socket.on('error', () => undefined)
-      const origin = req.headers.origin
-      let allowed = false
+      let device: CompanionDevice | null = null
       try {
-        allowed =
+        const origin = req.headers.origin
+        if (
           req.url === '/ws' &&
           this.reachedThrough(req) &&
-          sameToken(cookieToken(req), this.token()) &&
-          origin === `http://${req.headers.host}`
+          this.validHost(req) &&
+          origin === `http://${req.headers.host}` &&
+          sockets.clients.size < MAX_CLIENTS
+        ) {
+          device = this.authenticate(req)
+        }
       } catch {
-        allowed = false
+        device = null
       }
-      if (!allowed) {
+      if (!device) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
         socket.destroy()
         return
       }
-      sockets.handleUpgrade(req, socket, head, (ws) => this.onClient(ws))
+      const paired = device
+      sockets.handleUpgrade(req, socket, head, (ws) => this.onClient(ws, paired))
     })
     try {
       await new Promise<void>((resolvePromise, reject) => {
@@ -282,107 +438,156 @@ export class CompanionServer {
   /** Sends the current state to every connected device. */
   broadcast(): void {
     if (!this.sockets || this.sockets.clients.size === 0) return
-    const message = JSON.stringify({ type: 'state', state: this.hooks.state() })
-    for (const client of this.sockets.clients) client.send(message)
+    this.sendAll(JSON.stringify({ type: 'state', state: this.hooks.state(), serverNow: Date.now() }))
   }
 
-  private onClient(ws: WebSocket): void {
+  /** The review player's position, several times a second: only that, not the whole state. */
+  sendPlayer(player: PlayerState): void {
+    if (!this.sockets || this.sockets.clients.size === 0) return
+    this.sendAll(JSON.stringify({ type: 'player', player, serverNow: Date.now() }))
+  }
+
+  private sendAll(message: string): void {
+    for (const client of this.sockets?.clients ?? []) {
+      // A device that reads nothing (or only answers pings) must not make the app buffer forever.
+      if (client.bufferedAmount > MAX_BACKLOG_BYTES) client.terminate()
+      else client.send(message)
+    }
+  }
+
+  /** Token bucket: false once a device sends faster than any person could. */
+  private withinRate(ws: WebSocket): boolean {
+    const now = Date.now()
+    const bucket = this.allowance.get(ws) ?? { tokens: MESSAGE_BURST, at: now }
+    bucket.tokens = Math.min(MESSAGE_BURST, bucket.tokens + ((now - bucket.at) / 1000) * MESSAGE_RATE)
+    bucket.at = now
+    bucket.tokens -= 1
+    this.allowance.set(ws, bucket)
+    return bucket.tokens >= 0
+  }
+
+  private onClient(ws: WebSocket, device: CompanionDevice): void {
     ws.on('error', (error) => console.warn('[companion] socket error', error.message))
     this.alive.add(ws)
+    this.deviceOf.set(ws, device)
     ws.on('pong', () => this.alive.add(ws))
-    ws.send(JSON.stringify({ type: 'state', state: this.hooks.state() }))
+    ws.send(JSON.stringify({ type: 'hello', deviceId: device.id }))
+    ws.send(JSON.stringify({ type: 'state', state: this.hooks.state(), serverNow: Date.now() }))
+    void this.touch(device)
     this.hooks.changed()
     ws.on('close', () => {
-      // Its push-to-talk release will never arrive: end the note now.
-      if (this.noteOwner === ws) {
-        this.noteOwner = null
-        this.hooks.execute('stopNote', []).catch(() => undefined)
-      }
-      for (const [target, owner] of [...this.pttOwners]) {
-        if (owner !== ws) continue
-        this.pttOwners.delete(target)
-        this.hooks.execute('releasePtt', [target]).catch(() => undefined)
-      }
+      this.deviceOf.delete(ws)
+      // Its push-to-talk and note releases will never arrive: release them now (unless it is still connected).
+      if (![...this.deviceOf.values()].some((other) => other.id === device.id)) this.hooks.deviceGone(device)
       this.hooks.changed()
     })
     ws.on('message', (data) => {
-      let message: { id?: number; name?: SessionCommandName; args?: unknown[] }
+      // Whatever arrives, nothing may throw out of here (the main process would show an error dialog).
       try {
-        message = JSON.parse(String(data))
-      } catch {
-        return
-      }
-      const { id, name, args } = message
-      if (!name || !ALLOWED_COMMANDS.has(name) || !Array.isArray(args)) {
-        ws.send(JSON.stringify({ type: 'result', id, error: 'Unknown command' }))
-        return
-      }
-      if (name === 'startNote') this.noteOwner = ws
-      if (name === 'holdPtt') this.pttOwners.set(args[0], ws)
-      if (name === 'releasePtt') {
-        // Like the note: another device's release must not cut this one off.
-        const owner = this.pttOwners.get(args[0])
-        if (owner && owner !== ws && owner.readyState === owner.OPEN) {
-          ws.send(JSON.stringify({ type: 'result', id }))
+        if (!this.withinRate(ws)) {
+          ws.close(1008, 'Too many messages')
           return
         }
-        this.pttOwners.delete(args[0])
+        this.onMessage(ws, device, String(data))
+      } catch (error) {
+        console.warn('[companion] bad message from', device.name, error instanceof Error ? error.message : error)
       }
-      if (name === 'stopNote') {
-        // Another device releasing its button must not end this device's note.
-        if (this.noteOwner && this.noteOwner !== ws && this.noteOwner.readyState === this.noteOwner.OPEN) {
-          ws.send(JSON.stringify({ type: 'result', id }))
-          return
-        }
-        this.noteOwner = null
-      }
-      this.hooks
-        .execute(name, args)
-        .then(() => ws.send(JSON.stringify({ type: 'result', id })))
-        .catch((error: unknown) =>
-          ws.send(JSON.stringify({ type: 'result', id, error: error instanceof Error ? error.message : String(error) }))
-        )
     })
   }
 
+  private onMessage(ws: WebSocket, device: CompanionDevice, data: string): void {
+    let message: unknown
+    try {
+      message = JSON.parse(data)
+    } catch {
+      return
+    }
+    if (typeof message !== 'object' || message === null || Array.isArray(message)) return
+    const { id, name, args } = message as { id?: unknown; name?: unknown; args?: unknown }
+    // Only a plain number goes back: anything else (a huge nested value) is not echoed.
+    const replyId = Number.isSafeInteger(id) ? (id as number) : null
+    const reply = (error?: string): void => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'result', id: replyId, error }))
+    }
+    if (
+      typeof name !== 'string' ||
+      !ALLOWED_COMMANDS.has(name as SessionCommandName) ||
+      !Array.isArray(args) ||
+      args.length > 4
+    ) {
+      reply('Unknown command')
+      return
+    }
+    this.hooks.execute(name as SessionCommandName, args, device).then(
+      () => reply(),
+      (error: unknown) => reply(forDevice(error))
+    )
+  }
+
+  /** Remembers when a device was last connected (shown in Setup). */
+  private async touch(device: CompanionDevice): Promise<void> {
+    if (device.id === THIS_PC.id) return
+    const now = new Date().toISOString()
+    await this.devices
+      .save(this.devices.list().map((item) => (item.id === device.id ? { ...item, lastSeenAt: now } : item)))
+      .catch(() => undefined)
+  }
+
+  private async pair(req: IncomingMessage, res: ServerResponse, code: string | null): Promise<void> {
+    if (!sameSecret(code, this.pairingCode)) {
+      res.writeHead(403, { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8' }).end(UNPAIRED_PAGE)
+      return
+    }
+    // Used: the link (seen in a browser history, a screenshot…) pairs nobody else.
+    this.pairingCode = randomBytes(16).toString('hex')
+    const token = randomBytes(32).toString('base64url')
+    const device: StoredDevice = {
+      id: randomBytes(6).toString('hex'),
+      name: deviceName(req.headers['user-agent']),
+      tokenHash: digest(token).toString('hex'),
+      pairedAt: new Date().toISOString(),
+      lastSeenAt: null
+    }
+    await this.devices.save([...this.devices.list(), device])
+    this.hooks.paired({ id: device.id, name: device.name }, req.socket.remoteAddress ?? '')
+    void this.refreshNetwork()
+    // The cookie outlives the link. A page (not a redirect) continues to "/",
+    // so the next request is a same-site navigation: links opened from a
+    // camera app count as cross-site, and some browsers drop the cookie on a
+    // redirect then. Lax still keeps it off cross-site sub-requests, and the
+    // WebSocket checks the Origin anyway.
+    res
+      .writeHead(200, {
+        ...SECURITY_HEADERS,
+        'Set-Cookie': `${COOKIE}=${device.id}.${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`,
+        'Content-Type': 'text/html; charset=utf-8'
+      })
+      .end(PAIRED_PAGE)
+  }
+
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.reachedThrough(req)) {
-      res.writeHead(403).end()
+    if (!this.reachedThrough(req) || !this.validHost(req)) {
+      res.writeHead(403, SECURITY_HEADERS).end()
       return
     }
     // A request line like "GET //x" is not a valid path for URL.
     if (!req.url?.startsWith('/') || req.url.startsWith('//')) {
-      res.writeHead(400).end()
+      res.writeHead(400, SECURITY_HEADERS).end()
       return
     }
     const url = new URL(req.url, 'http://localhost')
-    const device = `${req.socket.remoteAddress} ${req.headers['user-agent'] ?? ''}`
+    const from = `${req.socket.remoteAddress} ${req.headers['user-agent'] ?? ''}`
     if (url.pathname === '/' || url.pathname === '/pair')
-      console.info(`[companion] ${req.method} ${url.pathname} from ${device}`)
+      console.info(`[companion] ${req.method} ${url.pathname} from ${from}`)
 
     if (url.pathname === '/pair') {
-      if (!sameToken(url.searchParams.get('token') ?? undefined, this.token())) {
-        res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' }).end(UNPAIRED_PAGE)
-        return
-      }
-      // The cookie outlives the link. A page (not a redirect) continues to "/",
-      // so the next request is a same-site navigation: links opened from a
-      // camera app count as cross-site, and some browsers drop the cookie on a
-      // redirect then. Lax still keeps it off cross-site sub-requests, and the
-      // WebSocket checks the Origin anyway.
-      res
-        .writeHead(200, {
-          'Set-Cookie': `${COOKIE}=${this.token()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`,
-          'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-store',
-          'Referrer-Policy': 'no-referrer'
-        })
-        .end(PAIRED_PAGE)
+      await this.pair(req, res, url.searchParams.get('code'))
       return
     }
 
-    if (!sameToken(cookieToken(req), this.token())) {
-      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' }).end(UNPAIRED_PAGE)
+    const device = this.authenticate(req)
+    if (!device) {
+      res.writeHead(401, { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8' }).end(UNPAIRED_PAGE)
       return
     }
 
@@ -393,20 +598,25 @@ export class CompanionServer {
         body += chunk
         if (body.length > 2000) break
       }
-      console.warn(`[companion] page error on ${device}: ${body.slice(0, 2000)}`)
-      res.writeHead(204).end()
+      console.warn(`[companion] page error on ${device.name}: ${body.slice(0, 2000).replace(/\s+/g, ' ')}`)
+      res.writeHead(204, SECURITY_HEADERS).end()
       return
     }
 
     if (url.pathname.startsWith('/media/')) {
       const parts = decodeParts(url.pathname.slice('/media/'.length))
-      const file = parts && sessionFilePath(parts)
-      if (!file) {
-        res.writeHead(403).end()
+      const file = parts && parts.length >= 2 && sessionFilePath(parts)
+      const allowed =
+        file &&
+        MEDIA_TYPES.has(extname(file).toLowerCase()) &&
+        this.hooks.mediaAllowed(parts[0], parts.slice(1).join('/')) &&
+        (await isSessionMedia(file))
+      if (!allowed) {
+        res.writeHead(403, SECURITY_HEADERS).end()
         return
       }
       const response = await serveFile(file, req.headers.range ?? null)
-      res.writeHead(response.status, Object.fromEntries(response.headers))
+      res.writeHead(response.status, { ...Object.fromEntries(response.headers), ...SECURITY_HEADERS })
       // pipeline, not pipe: an aborted download (seek, closed page) must close the file,
       // or Windows refuses to rename or delete the session folder afterwards.
       if (response.body) {
@@ -441,19 +651,20 @@ export class CompanionServer {
     const decoded = decodePart(path)
     const file = decoded === null ? null : resolve(root, '.' + decoded)
     if (!file || !file.startsWith(root + sep)) {
-      res.writeHead(403).end()
+      res.writeHead(403, SECURITY_HEADERS).end()
       return
     }
     try {
       const info = await stat(file)
       if (!info.isFile()) throw new Error('not a file')
       res.writeHead(200, {
+        ...SECURITY_HEADERS,
         'Content-Type': STATIC_TYPES[extname(file)] ?? 'application/octet-stream',
         'Content-Length': info.size
       })
       await pipeline(createReadStream(file), res).catch(() => undefined)
     } catch {
-      res.writeHead(404).end()
+      res.writeHead(404, SECURITY_HEADERS).end()
     }
   }
 }

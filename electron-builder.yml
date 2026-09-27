@@ -4,9 +4,17 @@ copyright: Copyright © 2026 Carmine (704798)
 directories:
   buildResources: build
   output: dist
+# The native modules ship their prebuilt N-API binaries, which Electron loads as
+# they are: rebuilding them from source would run node-gyp at build time and put
+# build leftovers (logs with local paths, sources) into the installer.
+npmRebuild: false
 files:
   - out/**/*
   - package.json
+  # uiohook-napi: only its Windows x64 prebuild (a local build folder, its sources
+  # and the other platforms' binaries don't belong in the installer).
+  - '!**/node_modules/uiohook-napi/{build,libuiohook,src}/**'
+  - '!**/node_modules/uiohook-napi/prebuilds/{darwin-*,linux-*,win32-arm64}/**'
 win:
   target:
     - target: nsis
@@ -21,7 +29,6 @@ publish:
   provider: github
   owner: SkyMistery
   repo: TrainingRecordingSystem
-  releaseType: draft
 extraResources:
   - from: resources/whisper
     to: whisper

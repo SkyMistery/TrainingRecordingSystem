@@ -1,4 +1,4 @@
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { EventSubscription, OBSWebSocket, type OBSRequestTypes, type OBSResponseTypes } from 'obs-websocket-js'
 import type {
   AudioSourceConfig,
@@ -6,8 +6,9 @@ import type {
   AudioTargetOption,
   CaptureConfig,
   DisplayOption,
-  MaskRect
+  MaskSlots
 } from '../../shared/types'
+import { IGNORED_EXECUTABLES } from '../programs'
 import type { Recorder, RecorderEvents } from './Recorder'
 
 /** OBS objects owned by the app. The trainer's own profile and scenes are never modified. */
@@ -21,8 +22,24 @@ const PROBE_PREFIX = 'TRS Probe '
 const MASK_PREFIX = 'TRS Mask '
 /** Opaque dark grey, as OBS stores colours (0xAABBGGRR). */
 const MASK_COLOR = 0xff262626
-/** Masks are sent again now and then, in case they were changed or hidden in OBS. */
+/**
+ * Masks are sent again now and then, in case they were changed or hidden in
+ * OBS; the display is checked as often (moved, cropped or put above them).
+ */
 const MASK_REFRESH_MS = 2_000
+/** Where the display sits in the scene: top left, whole canvas, uncropped, below the masks. */
+const DISPLAY_TRANSFORM = {
+  positionX: 0,
+  positionY: 0,
+  alignment: 5, // top left
+  rotation: 0,
+  cropLeft: 0,
+  cropRight: 0,
+  cropTop: 0,
+  cropBottom: 0,
+  boundsType: 'OBS_BOUNDS_SCALE_INNER',
+  boundsAlignment: 0
+}
 
 const INPUT_KIND: Record<AudioSourceKind, string> = {
   application: 'wasapi_process_output_capture',
@@ -65,13 +82,13 @@ const SLOW_REQUESTS = new Set<keyof OBSRequestTypes>([
 
 type RecordState = 'OBS_WEBSOCKET_OUTPUT_STARTED' | 'OBS_WEBSOCKET_OUTPUT_STOPPED'
 
-export interface ObsConnectionParams {
+interface ObsConnectionParams {
   url: string
   password?: string
 }
 
 /** The trainer's own profile and scene collection; either half may be unknown. */
-export interface ObsWorkspace {
+interface ObsWorkspace {
   profile: string | null
   collection: string | null
 }
@@ -80,7 +97,7 @@ export interface ObsWorkspace {
  * Keeps the trainer's own OBS profile and scene collection on disk, so they are
  * restored even if the app crashed while OBS was on the app's workspace.
  */
-export interface WorkspaceStore {
+interface WorkspaceStore {
   get(): ObsWorkspace | null
   set(workspace: ObsWorkspace | null): void
 }
@@ -114,7 +131,9 @@ export class ObsRecorder implements Recorder {
   private queue: Promise<unknown> = Promise.resolve()
   /** Canvas pixels per display pixel (the canvas is the display size, rounded to even). */
   private canvasScale = { x: 1, y: 1 }
-  private wantedMasks: MaskRect[] = []
+  /** Canvas size, the display's bounds in the scene. */
+  private canvas = { width: 0, height: 0 }
+  private wantedMasks: MaskSlots = []
   /** What OBS shows (JSON of the masks) and when it was sent; null when unknown. */
   private shownMasks: { key: string; at: number } | null = null
   /** Scene item id of each mask input, in order; null until read from the scene. */
@@ -151,6 +170,21 @@ export class ObsRecorder implements Recorder {
       if (sceneCollectionName === COLLECTION && !this.enteringWorkspace) this.sceneReady = true
     })
 
+    // OBS records the program scene: any other one would be black, silent or without masks.
+    this.obs.on('CurrentProgramSceneChanged', ({ sceneName }) => {
+      if (!this.recording || !this.sceneReady || sceneName === SCENE) return
+      this.call('SetCurrentProgramScene', { sceneName: SCENE }).then(
+        () =>
+          this.events.onWarning(
+            `OBS was switched to the scene “${sceneName}” and back to “${SCENE}”: a moment of the recording may show that scene.`
+          ),
+        () =>
+          this.events.onWarning(
+            `OBS is recording the scene “${sceneName}”, not “${SCENE}”: switch it back in OBS (private windows are not covered there).`
+          )
+      )
+    })
+
     this.obs.on('InputVolumeMeters', ({ inputs }) => {
       const levels: Record<string, number> = {}
       for (const input of inputs) {
@@ -172,10 +206,12 @@ export class ObsRecorder implements Recorder {
           // Paused in OBS: the recording (and so marker times) doesn't advance.
           this.clock = { durationMs: this.currentTimeMs(), sampledAt: Date.now() }
           this.paused = true
+          this.events.onPauseChanged()
           break
         case 'OBS_WEBSOCKET_OUTPUT_RESUMED':
           this.clock = { durationMs: this.clock.durationMs, sampledAt: Date.now() }
           this.paused = false
+          this.events.onPauseChanged()
           break
         case 'OBS_WEBSOCKET_OUTPUT_STOPPED': {
           for (const waiter of this.stateWaiters) waiter(outputState, outputPath ?? null)
@@ -218,9 +254,10 @@ export class ObsRecorder implements Recorder {
       return { version: obsVersion }
     } catch (error) {
       // Half-way through, OBS may already be on the app's profile: give the trainer's back.
-      await this.restoreWorkspace().catch(() => undefined)
+      // In the queue, after any setup change asked for meanwhile (it would enter the app's profile again).
+      await this.exclusive(() => this.restoreWorkspace()).catch(() => undefined)
       this.connected = false
-      await this.obs.disconnect().catch(() => undefined)
+      await this.closeSocket()
       throw error
     }
   }
@@ -233,8 +270,15 @@ export class ObsRecorder implements Recorder {
       this.connected = false
       this.sceneReady = false
       this.setRecording(false)
-      await this.obs.disconnect()
+      await this.closeSocket()
     }
+  }
+
+  /** The close handshake waits for OBS, which may not answer at all. */
+  private async closeSocket(): Promise<void> {
+    await withTimeout(this.obs.disconnect(), REQUEST_TIMEOUT_MS, 'OBS did not close the connection').catch(
+      () => undefined
+    )
   }
 
   isConnected(): boolean {
@@ -253,7 +297,8 @@ export class ObsRecorder implements Recorder {
         .map((item) => {
           // Built-in panels often have no model name (": 1920x1200 @ 1920,0").
           const name = String(item.itemName).replace(/^\s*:\s*/, 'Display: ')
-          const size = /(\d{3,5})\s*x\s*(\d{3,5})/.exec(name)
+          // The size is the one before "@ x,y": a model name may contain digits too.
+          const size = /(\d{3,5})\s*x\s*(\d{3,5})\s*@/.exec(name) ?? /(\d{3,5})\s*x\s*(\d{3,5})/.exec(name)
           return {
             id: String(item.itemValue),
             name,
@@ -315,7 +360,7 @@ export class ObsRecorder implements Recorder {
     await this.call('SetInputVolume', { inputName: AUDIO_PREFIX + sourceId, inputVolumeDb: volumeDb })
   }
 
-  setMasks(masks: MaskRect[]): Promise<void> {
+  setMasks(masks: MaskSlots): Promise<void> {
     this.wantedMasks = masks
     if (!this.sceneReady) {
       // Still connecting, or OBS is on the trainer's own scenes: shown once the app's scene is set up
@@ -351,6 +396,11 @@ export class ObsRecorder implements Recorder {
       if (this.recording) throw new Error('Already recording')
       const status = await this.call('GetRecordStatus')
       if (status.outputActive) throw new Error('OBS is already recording. Stop that recording first.')
+      // Checked again right before recording: the trainer may have switched OBS
+      // to their own profile (it would get the folder below) or to another scene
+      // (OBS records the program scene: without it the video is black and silent).
+      await this.ensureWorkspace()
+      await this.call('SetCurrentProgramScene', { sceneName: SCENE })
 
       await this.call('SetRecordDirectory', { recordDirectory: outputDir })
       const started = this.waitForState('OBS_WEBSOCKET_OUTPUT_STARTED', START_TIMEOUT_MS)
@@ -376,7 +426,15 @@ export class ObsRecorder implements Recorder {
         .catch(() => null)
       // StopRecord answers before the file is complete: wait for OBS to report it stopped.
       const stopped = this.waitForState('OBS_WEBSOCKET_OUTPUT_STOPPED', STOP_TIMEOUT_MS)
-      const { outputPath } = await this.call('StopRecord')
+      let outputPath: string | null = null
+      try {
+        outputPath = (await this.call('StopRecord')).outputPath
+      } catch (error) {
+        // Stopped in OBS at the same moment: nothing is left to stop, and its STOPPED event is gone.
+        const status = await this.call('GetRecordStatus').catch(() => null)
+        if (status?.outputActive !== false) throw error
+        return null
+      }
       const finalPath = await stopped
       this.setRecording(false)
       await this.waitUntilIdle(IDLE_WAIT_MS)
@@ -386,11 +444,32 @@ export class ObsRecorder implements Recorder {
       return finalPath ?? outputPath ?? null
     } finally {
       this.stopping = false
+      // Never left "recording" after a failed stop: Start would be refused and OBS never given back.
+      this.setRecording(false)
     }
+  }
+
+  resetOutputDir(dir: string): Promise<void> {
+    return this.exclusive(async () => {
+      if (!this.connected || this.recording) return
+      // Right after a stop OBS still reports its output active for a moment.
+      if (!(await this.waitUntilIdle(IDLE_WAIT_MS))) return
+      // Only the app's own profile: the trainer's keeps their own folder.
+      const { currentProfileName } = await this.call('GetProfileList')
+      if (currentProfileName !== PROFILE) return
+      const { recordDirectory } = await this.call('GetRecordDirectory')
+      if (resolve(recordDirectory).toLowerCase() !== resolve(dir).toLowerCase()) {
+        await this.call('SetRecordDirectory', { recordDirectory: dir })
+      }
+    })
   }
 
   isRecording(): boolean {
     return this.recording
+  }
+
+  isPaused(): boolean {
+    return this.recording && this.paused
   }
 
   currentTimeMs(): number {
@@ -502,13 +581,19 @@ export class ObsRecorder implements Recorder {
     return true
   }
 
-  /** Re-enters the app's workspace if the trainer switched OBS to another profile or collection. */
+  /**
+   * Re-enters the app's workspace if the trainer switched OBS to another
+   * profile or collection, or renamed or removed the app's scene.
+   */
   private async ensureWorkspace(): Promise<void> {
     const [profiles, collections] = await Promise.all([
       this.call('GetProfileList'),
       this.call('GetSceneCollectionList')
     ])
-    if (profiles.currentProfileName === PROFILE && collections.currentSceneCollectionName === COLLECTION) return
+    if (profiles.currentProfileName === PROFILE && collections.currentSceneCollectionName === COLLECTION) {
+      const { scenes } = await this.call('GetSceneList')
+      if (scenes.some((scene) => scene.sceneName === SCENE)) return
+    }
     await this.enterWorkspace()
   }
 
@@ -530,7 +615,7 @@ export class ObsRecorder implements Recorder {
     // Switching scenes would change what an ongoing recording, stream or call captures.
     if (needsSwitch && (await this.obsOutputActive())) {
       throw new Error(
-        'OBS is recording, streaming or using its virtual camera right now. Stop it in OBS, then connect again.'
+        'OBS is recording, streaming, or using its virtual camera or replay buffer right now. Stop it in OBS, then connect again.'
       )
     }
     if (needsSwitch) {
@@ -568,6 +653,13 @@ export class ObsRecorder implements Recorder {
       await this.call('CreateScene', { sceneName: SCENE })
     }
     await this.call('SetCurrentProgramScene', { sceneName: SCENE })
+    // A new collection comes with an empty "Scene": one click on it in OBS would record a black, silent video.
+    for (const scene of scenes) {
+      const sceneName = String(scene.sceneName)
+      if (sceneName === SCENE) continue
+      const items = await this.call('GetSceneItemList', { sceneName }).catch(() => null)
+      if (items?.sceneItems.length === 0) await this.call('RemoveScene', { sceneName }).catch(() => undefined)
+    }
 
     // Global "Desktop Audio" / "Mic/Aux" would bypass the app's mixer.
     const special = await this.call('GetSpecialInputs')
@@ -680,23 +772,45 @@ export class ObsRecorder implements Recorder {
       inputSettings: { monitor_id: display.id, capture_cursor: true }
     })
     this.canvasScale = { x: base.width / display.width, y: base.height / display.height }
+    this.canvas = base
     await this.ensureInScene(DISPLAY_INPUT)
+    await this.placeDisplay()
+  }
+
+  /**
+   * Puts the display back where the masks expect it: below everything else
+   * (a display added back lands on top), at the top left, uncropped, filling
+   * the canvas. Locked, so a stray drag in OBS's preview doesn't move it.
+   */
+  private async placeDisplay(): Promise<void> {
     const { sceneItemId } = await this.call('GetSceneItemId', { sceneName: SCENE, sourceName: DISPLAY_INPUT })
-    // Below everything else, so the masks cover it (a display added back lands on top).
     await this.call('SetSceneItemIndex', { sceneName: SCENE, sceneItemId, sceneItemIndex: 0 })
     await this.call('SetSceneItemTransform', {
       sceneName: SCENE,
       sceneItemId,
-      sceneItemTransform: {
-        positionX: 0,
-        positionY: 0,
-        rotation: 0,
-        boundsType: 'OBS_BOUNDS_SCALE_INNER',
-        boundsAlignment: 0,
-        boundsWidth: base.width,
-        boundsHeight: base.height
-      }
+      sceneItemTransform: { ...DISPLAY_TRANSFORM, boundsWidth: this.canvas.width, boundsHeight: this.canvas.height }
     })
+    await this.call('SetSceneItemLocked', { sceneName: SCENE, sceneItemId, sceneItemLocked: true })
+  }
+
+  /** True if the display is no longer where placeDisplay put it (the trainer moved it in OBS). */
+  private async displayMoved(): Promise<boolean> {
+    const { sceneItemId } = await this.call('GetSceneItemId', { sceneName: SCENE, sourceName: DISPLAY_INPUT })
+    const [{ sceneItemIndex }, { sceneItemTransform }] = await Promise.all([
+      this.call('GetSceneItemIndex', { sceneName: SCENE, sceneItemId }),
+      this.call('GetSceneItemTransform', { sceneName: SCENE, sceneItemId })
+    ])
+    const expected: Record<string, unknown> = {
+      ...DISPLAY_TRANSFORM,
+      boundsWidth: this.canvas.width,
+      boundsHeight: this.canvas.height
+    }
+    return (
+      sceneItemIndex !== 0 ||
+      Object.entries(expected).some(
+        ([key, value]) => Number(sceneItemTransform[key]) !== value && sceneItemTransform[key] !== value
+      )
+    )
   }
 
   private async applyAudioSources(sources: AudioSourceConfig[]): Promise<void> {
@@ -741,8 +855,11 @@ export class ObsRecorder implements Recorder {
       if (!this.sceneReady) return
       const masks = this.wantedMasks
       const key = JSON.stringify(masks)
-      if (this.shownMasks?.key === key && Date.now() - this.shownMasks.at < MASK_REFRESH_MS) return
+      const due = !this.shownMasks || Date.now() - this.shownMasks.at >= MASK_REFRESH_MS
+      if (this.shownMasks?.key === key && !due) return
       try {
+        // Now and then: the display may have been moved, cropped or put above the masks in OBS.
+        if (due && masks.some(Boolean)) await this.checkDisplay()
         await this.showMasks(masks)
         this.shownMasks = { key, at: Date.now() }
       } catch (error) {
@@ -755,14 +872,29 @@ export class ObsRecorder implements Recorder {
     }
   }
 
-  /** Moves one mask input over each rectangle, and hides the ones not needed. */
-  private async showMasks(masks: MaskRect[]): Promise<void> {
+  private async checkDisplay(): Promise<void> {
+    if (this.canvas.width === 0) {
+      // Not configured in this run (e.g. a recording picked up after a restart): the canvas is the display.
+      const video = await this.call('GetVideoSettings')
+      this.canvas = { width: video.baseWidth, height: video.baseHeight }
+    }
+    if (await this.displayMoved()) await this.placeDisplay()
+  }
+
+  /**
+   * Moves one mask input over each rectangle, and hides the ones not needed.
+   * Covering comes first and uncovering last, so no window is ever left bare in between.
+   */
+  private async showMasks(masks: MaskSlots): Promise<void> {
     if (!this.maskItems) {
       const { sceneItems } = await this.call('GetSceneItemList', { sceneName: SCENE })
       const inScene = new Map(sceneItems.map((item) => [String(item.sourceName), Number(item.sceneItemId)]))
       // Leftovers from an earlier run are reused (and hidden if not needed).
       const found: number[] = []
       for (let i = 1; inScene.has(MASK_PREFIX + i); i++) found.push(inScene.get(MASK_PREFIX + i)!)
+      for (const sceneItemId of found) {
+        await this.call('SetSceneItemLocked', { sceneName: SCENE, sceneItemId, sceneItemLocked: true })
+      }
       this.maskItems = found
     }
     const items = this.maskItems
@@ -771,36 +903,48 @@ export class ObsRecorder implements Recorder {
       // Created hidden, on top of the scene; an input by that name outside the scene is replaced.
       const { sceneItemId } = await this.exclusive(async () => {
         await this.removeInputIfExists(inputName)
-        return this.call('CreateInput', {
+        const created = await this.call('CreateInput', {
           sceneName: SCENE,
           inputName,
           inputKind: 'color_source_v3',
           inputSettings: { color: MASK_COLOR, width: 16, height: 16 },
           sceneItemEnabled: false
         })
+        await this.call('SetSceneItemLocked', {
+          sceneName: SCENE,
+          sceneItemId: created.sceneItemId,
+          sceneItemLocked: true
+        })
+        return created
       })
       items.push(sceneItemId)
     }
     const { x: scaleX, y: scaleY } = this.canvasScale
     for (const [i, sceneItemId] of items.entries()) {
       const mask = masks[i]
-      if (mask) {
-        await this.call('SetSceneItemTransform', {
-          sceneName: SCENE,
-          sceneItemId,
-          sceneItemTransform: {
-            positionX: Math.floor(mask.x * scaleX),
-            positionY: Math.floor(mask.y * scaleY),
-            alignment: 5, // top left
-            rotation: 0,
-            boundsType: 'OBS_BOUNDS_STRETCH',
-            boundsAlignment: 0,
-            boundsWidth: Math.max(1, Math.ceil(mask.width * scaleX)),
-            boundsHeight: Math.max(1, Math.ceil(mask.height * scaleY))
-          }
-        })
-      }
-      await this.call('SetSceneItemEnabled', { sceneName: SCENE, sceneItemId, sceneItemEnabled: Boolean(mask) })
+      if (!mask) continue
+      await this.call('SetSceneItemTransform', {
+        sceneName: SCENE,
+        sceneItemId,
+        sceneItemTransform: {
+          positionX: Math.floor(mask.x * scaleX),
+          positionY: Math.floor(mask.y * scaleY),
+          alignment: 5, // top left
+          rotation: 0,
+          cropLeft: 0,
+          cropRight: 0,
+          cropTop: 0,
+          cropBottom: 0,
+          boundsType: 'OBS_BOUNDS_STRETCH',
+          boundsAlignment: 0,
+          boundsWidth: Math.max(1, Math.ceil(mask.width * scaleX)),
+          boundsHeight: Math.max(1, Math.ceil(mask.height * scaleY))
+        }
+      })
+      await this.call('SetSceneItemEnabled', { sceneName: SCENE, sceneItemId, sceneItemEnabled: true })
+    }
+    for (const [i, sceneItemId] of items.entries()) {
+      if (!masks[i]) await this.call('SetSceneItemEnabled', { sceneName: SCENE, sceneItemId, sceneItemEnabled: false })
     }
   }
 
@@ -812,9 +956,6 @@ export class ObsRecorder implements Recorder {
     }
   }
 }
-
-/** Processes whose windows are never an audio source worth recording. */
-const IGNORED_EXECUTABLES = new Set(['explorer.exe', 'searchhost.exe', 'shellexperiencehost.exe', 'textinputhost.exe'])
 
 /**
  * OBS lists one entry per window ("title:class:exe"); Aurora alone has one per
