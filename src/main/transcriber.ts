@@ -45,7 +45,7 @@ interface Job {
   noteId: string
 }
 
-export interface TranscriberEvents {
+interface TranscriberEvents {
   /** A note changed in a session (status or transcript). */
   noteChanged: (folder: string) => void
   /** Queue length, installed models or download progress changed. */

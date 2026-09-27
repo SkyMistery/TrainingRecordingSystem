@@ -82,13 +82,13 @@ const SLOW_REQUESTS = new Set<keyof OBSRequestTypes>([
 
 type RecordState = 'OBS_WEBSOCKET_OUTPUT_STARTED' | 'OBS_WEBSOCKET_OUTPUT_STOPPED'
 
-export interface ObsConnectionParams {
+interface ObsConnectionParams {
   url: string
   password?: string
 }
 
 /** The trainer's own profile and scene collection; either half may be unknown. */
-export interface ObsWorkspace {
+interface ObsWorkspace {
   profile: string | null
   collection: string | null
 }
@@ -97,7 +97,7 @@ export interface ObsWorkspace {
  * Keeps the trainer's own OBS profile and scene collection on disk, so they are
  * restored even if the app crashed while OBS was on the app's workspace.
  */
-export interface WorkspaceStore {
+interface WorkspaceStore {
   get(): ObsWorkspace | null
   set(workspace: ObsWorkspace | null): void
 }

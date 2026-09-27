@@ -2,9 +2,9 @@ import { TERMS_URL } from '@shared/terms'
 import symbol from '../assets/it-symbol.svg'
 import symbolWhite from '../assets/it-symbol-white.svg'
 
-export const AUTHOR = 'Carmine (704798)'
-export const DIVISION = 'IVAO Italy Division'
-export const COPYRIGHT = `© 2026 ${AUTHOR}`
+const AUTHOR = 'Carmine (704798)'
+const DIVISION = 'IVAO Italy Division'
+const COPYRIGHT = `© 2026 ${AUTHOR}`
 
 /** Credits at the bottom of every page of the app and of the Companion. */
 export function AppFooter({ version }: { version?: string }): React.JSX.Element {

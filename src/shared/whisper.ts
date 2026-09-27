@@ -1,6 +1,6 @@
 import type { WhisperModelId } from './types'
 
-export interface WhisperModelInfo {
+interface WhisperModelInfo {
   id: WhisperModelId
   label: string
   sizeMb: number

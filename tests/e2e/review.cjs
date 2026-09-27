@@ -415,10 +415,10 @@ async function main() {
     const afterForward10 = await videoTime()
     check('Notes window: forward 10 seconds', Math.abs(afterForward10 - 20) < 0.5, afterForward10.toFixed(2) + ' s')
     await clickIn('10× speed')
-    await onVideo('currentTime = 0')
+    await onVideo('currentTime = 30')
     await onVideo('play()')
-    // Measured once playing (the start may wait for the decoder).
-    await sleep(1000)
+    // Measured once playing: after 1× Chromium may stall at 10× until the page's stall check seeks (~1.5 s).
+    await sleep(2500)
     const fastFrom = await videoTime()
     await sleep(1000)
     const fastTime = (await videoTime()) - fastFrom

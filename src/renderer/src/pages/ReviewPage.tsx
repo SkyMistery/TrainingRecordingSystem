@@ -24,6 +24,8 @@ import { useZoom } from '../components/useZoom'
 import { formatDuration } from '../format'
 
 const REPORT_INTERVAL_MS = 400
+/** How often a playing video is checked for a stall. */
+const STALL_CHECK_MS = 700
 
 /**
  * The debriefing player. It never shows the trainer's notes, so this window
@@ -174,6 +176,31 @@ export function ReviewPage({ state, review }: { state: AppState; review: ReviewS
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [apply, zoomBy, resetZoom])
+
+  /**
+   * Chromium sometimes stops for good when the speed jumps (e.g. 1× → 10×)
+   * during playback: playing, but waiting for data that never comes. A seek to
+   * the same point gets it going again.
+   */
+  useEffect(() => {
+    if (!playing) return
+    let last = -1
+    let nudged = false
+    const timer = setInterval(() => {
+      const element = video.current
+      if (!element || element.paused || element.seeking) return
+      const stuck = element.readyState < HTMLMediaElement.HAVE_FUTURE_DATA && element.currentTime === last
+      last = element.currentTime
+      if (!stuck) {
+        nudged = false
+        return
+      }
+      if (nudged) return
+      nudged = true
+      element.currentTime = element.currentTime
+    }, STALL_CHECK_MS)
+    return () => clearInterval(timer)
+  }, [playing])
 
   // Closing the review lets go of the file at once, or Windows refuses to rename or delete the session.
   useEffect(() => {

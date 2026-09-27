@@ -32,8 +32,7 @@ import type {
   UpdateState,
   WhisperModelId
 } from '../shared/types'
-import { bestMatch, pressMatches, sameKey } from '../shared/hotkey'
-import { PLAYBACK_RATES } from '../shared/markers'
+import { bestMatch, pressMatches } from '../shared/hotkey'
 import { RECORDING_CONSENT, TERMS_VERSION } from '../shared/terms'
 import { isAppPage } from './appPages'
 import { AudioCapture } from './audioWindow'
@@ -47,7 +46,6 @@ import {
   adoptRecording,
   createSession,
   findRecordingFile,
-  RECORDING_FILE,
   listSessions,
   loadSession,
   renameSessionFolder,

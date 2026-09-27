@@ -26,6 +26,7 @@ import {
   markerTimeLabel,
   paint
 } from '../components/MarkerList'
+import { ConfirmDeleteButton } from '../components/ConfirmDeleteButton'
 import { NoteItem } from '../components/NoteItem'
 import { PlaybackRates } from '../components/PlaybackRates'
 import { RecordingWarnings } from '../components/RecordingWarnings'
@@ -285,6 +286,11 @@ function MarkerDetail({
         >
           {markerTimeLabel(marker, null)}
         </button>
+        <ConfirmDeleteButton
+          className="ml-auto"
+          label={`Delete marker ${marker.number}`}
+          onConfirm={() => send('deleteMarker', review.folderName, marker.id)}
+        />
       </div>
       <CategoryChips
         categories={state.categories}

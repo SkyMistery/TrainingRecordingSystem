@@ -40,7 +40,7 @@ const key = (code: number, label: string): Hotkey => ({
 })
 
 /** Category colours come from the IVAO brand palette (atmos, semantic, product). */
-export const defaultMarkerSettings = (): MarkerSettings => ({
+const defaultMarkerSettings = (): MarkerSettings => ({
   preRollSeconds: 10,
   // 67 and 68 are the uiohook keycodes of F9 and F10.
   hotkeys: { marker: key(67, 'F9'), range: key(68, 'F10'), voiceNote: null },

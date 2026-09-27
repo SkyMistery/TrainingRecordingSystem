@@ -178,6 +178,7 @@ async function waitForState(evaluate, predicate, timeoutMs = 20_000) {
 
 module.exports = {
   ROOT,
+  TERMS_VERSION,
   sleep,
   check,
   report,

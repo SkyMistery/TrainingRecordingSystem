@@ -195,7 +195,7 @@ export function canSimulate(hotkey: Hotkey): boolean {
   return hotkey.device === 'mouse' ? hotkey.code in MOUSE_VKS : virtualKey(hotkey.code) !== 0
 }
 
-export interface HotkeyEvents {
+interface HotkeyEvents {
   down: [Hotkey]
   up: [Hotkey]
   /** A simulated key could not be released yet (it is tried again), or was released after all (null). */

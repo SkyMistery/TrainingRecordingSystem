@@ -37,6 +37,7 @@ Guidance for working on this repository (Training Recording System, TRS).
 ```bash
 npm run dev         # development (Vite dev server; Companion unbundled)
 npm run typecheck
+npm test            # unit tests (tests/unit, Node test runner via esbuild)
 npm run format      # Prettier (semi: false, singleQuote, printWidth 120)
 npm run build       # production bundle → run with: npx electron .
 npm run dist        # installer
@@ -54,18 +55,19 @@ needs the trainer's OK. The workflow itself refuses a tag that doesn't match
 package.json and publishes only after checking the assets and latest.yml; if
 a check stops it, the release stays a draft: verify it by hand and publish it
 through the API (`-F draft=false -f make_latest=true`) — never move a pushed
-tag. Installed apps show the update in the top bar ("Restart to update",
-v1.2.1+); users accept the terms again only when TERMS_VERSION changes.
+tag. Installed apps offer the update in the top bar and download and install
+it only when the trainer confirms (v1.6+; earlier versions download it by
+themselves); users accept the terms again only when TERMS_VERSION changes.
 
 ## Testing
 
-- Typecheck + build after every change; format with Prettier.
+- Typecheck + `npm test` + build after every change; format with Prettier.
 - tests/e2e/*.cjs drive the real app via CDP (see tests/e2e/README.md). Run
-  the relevant one after changing behaviour. `review.cjs`, `sessions.cjs`,
-  `transcribe.cjs`, `mic.cjs` and `ptt.cjs` use an isolated `--user-data-dir` and their own
-  ports, so they don't disturb the trainer's running app. The app is single
-  instance per user-data folder: an isolated instance runs beside the
-  trainer's, one on the default folder only focuses it.
+  the relevant one after changing behaviour. Every script runs an isolated
+  instance (`--user-data-dir` and sessions folder in %TEMP%, own ports, built
+  by tests/e2e/lib.cjs), so it doesn't touch the trainer's settings. The app
+  is single instance per user-data folder: an isolated instance runs beside
+  the trainer's, one on the default folder only focuses it.
 - For UI screenshots, render the built renderer (out/renderer) in an Electron
   window with a mocked preload. Use `webPreferences: { offscreen: true }` +
   `capturePage()` (a visible window at x: -4000 gave blank pages or
@@ -89,14 +91,13 @@ v1.2.1+); users accept the terms again only when TERMS_VERSION changes.
   gracefully (`CloseMainWindow`), never kill it. Never stop a recording you
   didn't start.
 - The OBS WebSocket password is never stored in the repo or in scripts: pass
-  it as an argument only for the run.
-- OBS tests (markers, notes, obs-recovery, masks: real settings, app closed;
-  mic: isolated) switch the trainer's OBS to "IVAO TRS" and back. Afterwards
-  check with a read-only status script that OBS is idle and back on the
-  trainer's profile (the OBS window title shows it), and remove the "E2E test"
-  session folders they leave. masks.cjs checks hidden windows with a magenta
-  test window: run it after touching windowMasks.ts, windows.ts or the masks
-  in ObsRecorder.
+  it in `TRS_OBS_PASSWORD` only for the run.
+- OBS tests (markers, notes, obs-recovery, masks, mic) need the trainer's app
+  closed (one app per OBS) and switch the trainer's OBS to "IVAO TRS" and
+  back. Afterwards check with a read-only status script that OBS is idle and
+  back on the trainer's profile (the OBS window title shows it). masks.cjs
+  checks hidden windows with a magenta test window: run it after touching
+  windowMasks.ts, windows.ts or the masks in ObsRecorder.
 - Test fixtures: `startSession(metadata, true)` (the consent confirmation), and
   isolated settings that click the UI need `termsAccepted` (the terms dialog
   covers the page otherwise).

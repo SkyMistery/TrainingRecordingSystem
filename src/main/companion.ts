@@ -18,7 +18,7 @@ import type {
   SessionCommandName
 } from '../shared/types'
 import { devServerUrl } from './appPages'
-import { serveFile, sessionFilePath } from './media'
+import { isSessionMedia, serveFile, sessionFilePath } from './media'
 
 const COOKIE = 'trs_device'
 
@@ -86,7 +86,7 @@ export interface CompanionDevice {
   name: string
 }
 
-export interface DeviceStore {
+interface DeviceStore {
   list(): StoredDevice[]
   save(devices: StoredDevice[]): Promise<void>
 }
@@ -609,7 +609,8 @@ export class CompanionServer {
       const allowed =
         file &&
         MEDIA_TYPES.has(extname(file).toLowerCase()) &&
-        this.hooks.mediaAllowed(parts[0], parts.slice(1).join('/'))
+        this.hooks.mediaAllowed(parts[0], parts.slice(1).join('/')) &&
+        (await isSessionMedia(file))
       if (!allowed) {
         res.writeHead(403, SECURITY_HEADERS).end()
         return

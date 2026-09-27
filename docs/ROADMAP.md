@@ -19,7 +19,7 @@ everything quickly during the debriefing.
 
 ## Milestones
 
-Status (2026-09-26):
+Status (2026-09-27):
 
 | Milestone | State |
 |---|---|
@@ -34,6 +34,7 @@ Status (2026-09-26):
 | v1.3 terms of use | done — v1.3.0: terms of use accepted on first start, recording consent confirmed for every session (IVAO Rule 2.1.12) |
 | v1.4 feedback | done — v1.4.0: hidden windows (Aurora COM BOX covered in recordings and screenshots, other windows configurable), 5× and 10× speed, 10-second jumps; v1.4.1: new TRS logo (app icon, headers, favicon); v1.4.2: notes from the Companion or app button can hold the voice-note key (Discord push-to-mute) |
 | v1.5 feedback | done — v1.5.0: push-to-talk buttons for the voice chat and Aurora on the Companion; transcription prompt in the dictation language with ATC terms and the ICAO alphabet, "Words to recognise", silent notes left without text; v1.5.1: no hidden-windows warning while connecting to OBS, quitting saves the settings it changed |
+| v1.6 review | ready, not released — full security and robustness review of v1.5.1: a paired device per Companion link (list, remove one), Companion push-to-talk only during a recording or review with keep-alive and shorter limits, hidden-window masks that follow popups and warn when they fail, recordings never overwritten, updates only on confirmation, terms of use v2 |
 
 Next: v1.5 is in use by the IVAO Italy trainers; their feedback is collected
 on Discord and drives the next release. Possibly later: the native recorder
